@@ -6,6 +6,7 @@ using NewC.Utils;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -103,7 +104,8 @@ namespace CeeFind
 				Console.WriteLine($"Including binary files: " + includeBinary);
 			}
 			SearchContext context = new SearchContext(isVerbose, includeBinary);
-			NextPath startPath = new NextPath(0, rootDirectory, new List<string>(), null, 0);
+			QueuedDirectory startPath = QueuedDirectory.InitializeRoot(rootDirectory, stuff);
+			startPath.IsRoot = true;
 			if (!Program.flags.Contains("up"))
 			{
 				Program.Search(startPath, new List<string>(), filenameFilterRegex, searchInFiles, search, results, 0, context);
@@ -118,7 +120,7 @@ namespace CeeFind
 					}
 					Program.Search(startPath, new List<string>(), filenameFilterRegex, searchInFiles, search, results, 0, context);
 					rootDirectory = rootDirectory.Parent;
-					startPath = new NextPath(0, rootDirectory, new List<string>(), null, 0);
+					startPath = QueuedDirectory.InitializeRoot(rootDirectory, stuff);
 				}
 			}
 			if (context.IsVerbose)
@@ -153,7 +155,8 @@ namespace CeeFind
 				foreach (FileInfo result in distinctResultFiles)
 				{
 					bool showDirName = true;
-					Program.SearchFile(new NextPath(0, null, null, null, 0), string.Empty, new List<Regex>(), replaceString, replaceResults, result, ref showDirName, context);
+					QueuedDirectory startPath = QueuedDirectory.InitializeRoot(rootDirectory, stuff);
+					Program.SearchFile(startPath, string.Empty, new List<Regex>(), replaceString, replaceResults, result, ref showDirName, context);
 				}
 				if (replaceResults.Count <= 0)
 				{
@@ -200,16 +203,19 @@ namespace CeeFind
 			}
 		}
 
-		private static void Search(NextPath startPath, List<string> path, string searchString, bool searchInFiles, List<Regex> search, List<SearchResult> allResults, int depth, SearchContext context)
+		private static void Search(QueuedDirectory startPath, List<string> path, string searchString, bool searchInFiles, List<Regex> search, List<SearchResult> allResults, int depth, SearchContext context)
 		{
 			List<Vertex> verticesWhereObjFound = new List<Vertex>();
-			queue.EnqueueSubfolder(path, startPath.Directory, startPath.Directory.GetDirectories());
+			queue.EnqueueSubfolder(startPath.Directory, startPath.Directory.GetDirectories());
 			long resultCount = 0;
 			FileInfo[] files;
 			FileInfo file;
-			bool flag;
+			Stopwatch sw = new Stopwatch();
+			long totalTime = 0;
+			long directoryCount = 0;
 			while (true)
 			{
+				sw.Restart();
 				/*if (depth != 0 || queue.IsMore())
 				{
 					flag = (depth == 0 ? false : Program.Session.ShouldTake());
@@ -222,7 +228,7 @@ namespace CeeFind
 				{
 					break;
 				}
-				NextPath directory = queue.Consume();
+				QueuedDirectory directory = queue.Consume();
 
 				bool shownDirName = false;
 
@@ -284,7 +290,7 @@ namespace CeeFind
 				}
 			}
 
-			queue.EnqueueSubfolder(directory.RelativePath, directory.Directory, directory.Directory.GetDirectories()); 
+			queue.EnqueueSubfolder(directory.Directory, directory.Directory.GetDirectories()); 
 
 				if ((searchInFiles ? false : !Program.flags.Contains("files")))
 				{
@@ -297,6 +303,9 @@ namespace CeeFind
 						}
 					}
 				}
+				sw.Stop();
+				totalTime += sw.ElapsedMilliseconds;
+				directoryCount++;
 			}
 			foreach (Vertex v in verticesWhereObjFound)
             {
@@ -306,7 +315,7 @@ namespace CeeFind
 			return;
 		}
 
-		private static bool SearchFile(NextPath currentPath, string filenameSearchRegex, List<Regex> search, string searchStr, List<SearchResult> allResults, FileInfo file, ref bool showDirName, SearchContext context)
+		private static bool SearchFile(QueuedDirectory currentPath, string filenameSearchRegex, List<Regex> search, string searchStr, List<SearchResult> allResults, FileInfo file, ref bool showDirName, SearchContext context)
 		{
 			if (!context.IncludeBinary)
 			{

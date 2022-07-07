@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace CeeFind.BetterQueue
@@ -40,22 +41,8 @@ namespace CeeFind.BetterQueue
             Adjacents = new Dictionary<string, Edge>();
         }
 
-        internal void AddAdjacents(Stuff stuff, List<string> path)
-        {
-            for (int i = path.Count - 2; i >= 0; i--)
-            {
-                int offset = i - path.Count + 1;
-                string current = path[i];
-                if (stuff.Vertexes.TryGetValue(current, out Vertex other))
-                {
-                    UpdateAdjacents(offset, other, this);
-                    UpdateAdjacents(-offset, this, other);
-                }
-            }
-        }
 
-
-        private static void UpdateAdjacents(int i, Vertex v, Vertex v2)
+        internal static void UpdateAdjacents(int i, Vertex v, Vertex v2)
         {
             if (v2.Adjacents.ContainsKey(v.Name))
             {

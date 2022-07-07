@@ -16,7 +16,7 @@ namespace NewC.BetterQueue
 {
     internal class CeeFindQueue
     {
-        private HashSet<long> done = new HashSet<long>();
+        private Dictionary<int, QueuedDirectory> done = new Dictionary<int, QueuedDirectory>();
         private string fileNameFilter;
         private Regex fileNameFilterRegex;
         private List<string> insideFileFilter;
@@ -24,8 +24,8 @@ namespace NewC.BetterQueue
         private DirectoryInfo RootDirectory { get; init; }
         internal List<string> Root { get; set; }
         private Stuff stuff;
-        private Dictionary<long, NextPath> preQueue;
-        private PriorityQueue<NextPath, double> queue;
+        private Dictionary<long, QueuedDirectory> preQueue;
+        private PriorityQueue<QueuedDirectory, double> queue;
 
         private readonly long INDEX_LOOKUP_SCORE = 1000000;
         private readonly long BASE_SCORE = 100;
@@ -40,8 +40,8 @@ namespace NewC.BetterQueue
             List<string> rootPathList = rootDirectory.FullName.Split('\\').ToList();
             this.Root = rootPathList;
             this.stuff = stuff;
-            this.queue = new PriorityQueue<NextPath, double>();
-            this.preQueue = new Dictionary<long, NextPath>();
+            this.queue = new PriorityQueue<QueuedDirectory, double>();
+            this.preQueue = new Dictionary<long, QueuedDirectory>();
         }
 
         public void Initialize()
@@ -51,16 +51,17 @@ namespace NewC.BetterQueue
             MoveFromPreQueueToQueue();
         }
 
-        public void EnqueueSubfolder(List<string> path, DirectoryInfo directory, DirectoryInfo[] subfolders)
+        public void EnqueueSubfolder(DirectoryInfo parent, DirectoryInfo[] subfolders)
         {
+            int parentHash = parent.FullName.GetHashCode();
             foreach (DirectoryInfo subfolder in subfolders)
             {
-                List<string> subPath = new List<string>(path);
-                subPath.Add(subfolder.Name);
-                if (done.Contains(DirectoryUtils.GetHashCodeFromRelativePath(subPath)))
+                if (done.TryGetValue(subfolder.FullName.GetHashCode(), out QueuedDirectory qd)
+                    && qd.IsVisited)
                 {
                     continue;
                 }
+
                 stuff.Vertexes.TryGetValue(subfolder.Name, out Vertex vertex);
                 double score = BASE_SCORE;
                 if (vertex == null)
@@ -76,20 +77,64 @@ namespace NewC.BetterQueue
                         vertex.AbsolutePaths.Add(subfolder.FullName);
                     }
                 }
-                vertex.AddAdjacents(stuff, subPath);
+                AddAdjacents(subfolder, parentHash);
                 score = GenerateScore(vertex, vertex, score, 0);
                 score = BoostScoreBasedOnWhenLastSeen(score, subfolder.LastWriteTimeUtc);
-                QueueUpVertex(score, vertex, subfolder, subPath);
+                QueueUpVertex(score, vertex, subfolder, parentHash);
 
             }
             MoveFromPreQueueToQueue();
         }
 
-        public NextPath Consume()
+
+
+        internal void AddAdjacents(DirectoryInfo directory, int parentHash)
         {
-            NextPath qi = queue.Dequeue();
+            QueuedDirectory current;
+            if (done.TryGetValue(parentHash, out QueuedDirectory qd))
+            {
+                current = qd;
+            }
+            else
+            {
+                return;
+            }
+
+            if (!stuff.Vertexes.TryGetValue(current.Directory.Name, out Vertex start))
+            {
+                return;
+            }
+
+            for (int i = 0; i < 2; i++)
+            {
+                if (stuff.Vertexes.TryGetValue(current.Directory.Name, out Vertex other))
+                {
+                    Vertex.UpdateAdjacents(i, other, start);
+                    Vertex.UpdateAdjacents(-i, start, other);
+                }
+
+                if (done.TryGetValue(parentHash, out qd))
+                {
+                    current = qd;
+                }
+                else
+                {
+                    return;
+                }
+            }
+        }
+
+        public QueuedDirectory Consume()
+        {
+            QueuedDirectory qi;
+            do
+            {
+                qi = queue.Dequeue();
+            } while (qi.IsVisited || (done.ContainsKey(qi.Id) && done[qi.Id].IsVisited));
+
             qi.Vertex.Visits++;
-            done.Add(qi.Hash);
+            qi.IsVisited = true;
+            done.Add(qi.Id, qi);
             return qi;
         }
 
@@ -119,7 +164,7 @@ namespace NewC.BetterQueue
 
         private void MoveFromPreQueueToQueue()
         {
-            foreach (NextPath q in this.preQueue.Values)
+            foreach (QueuedDirectory q in this.preQueue.Values)
             {
                 this.queue.Enqueue(q, q.Score * -1);
             }
@@ -139,7 +184,7 @@ namespace NewC.BetterQueue
             {
                 if (fileNameFilterRegex.IsMatch(search))
                 {
-                    QueueUpThing(stuff.RegexesToThings[fileNameFilterRegex.ToString()], INDEX_LOOKUP_SCORE);
+                    QueueUpThing(new List<string>() { search }, INDEX_LOOKUP_SCORE);
                 }
             }
         }
@@ -219,15 +264,15 @@ namespace NewC.BetterQueue
                     score = BoostScoreBasedOnWhenLastSeen(score, vertex.LastFinds.Last());
                     score = AdjustScoreForFrequency(score, vertex.LastFinds.Count);
                     DirectoryInfo directory = new DirectoryInfo(path);
-                    QueueUpVertex(score, vertex, directory, DirectoryUtils.GetRelativePath(RootDirectory, directory.FullName));
+                    QueueUpVertex(score, vertex, directory, directory.Parent.FullName.GetHashCode());
                 }
             }
         }
 
-        private void QueueUpVertex(double score, Vertex vertex, DirectoryInfo directory, List<string> relativePath)
+        private void QueueUpVertex(double score, Vertex vertex, DirectoryInfo directory, int parent)
         {
-            long pathHash = DirectoryUtils.GetHashCodeFromRelativePath(relativePath);
-            if (!done.Contains(pathHash))
+            int pathHash = directory.FullName.GetHashCode();
+            if (!done.ContainsKey(directory.FullName.GetHashCode()))
             {
                 if (preQueue.ContainsKey(pathHash))
                 {
@@ -236,7 +281,7 @@ namespace NewC.BetterQueue
                 }
                 else
                 {
-                    preQueue.Add(pathHash, new NextPath(pathHash, directory, relativePath, vertex, score));
+                    preQueue.Add(pathHash, new QueuedDirectory(pathHash, directory, directory.Parent.FullName.GetHashCode(), vertex, score));
                 }
 
             }
