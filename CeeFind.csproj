@@ -2,9 +2,9 @@
   <PropertyGroup>
     <TargetFramework>net6.0</TargetFramework>
     <Platform Condition=" '$(Platform)' == '' ">x86</Platform>
-    <AssemblyName>NewC</AssemblyName>
+    <AssemblyName>ceefind</AssemblyName>
     <OutputType>Exe</OutputType>
-    <RootNamespace>NewC</RootNamespace>
+    <RootNamespace>CeeFind</RootNamespace>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <Platforms>AnyCPU;x64</Platforms>
   </PropertyGroup>
@@ -42,5 +42,15 @@
     <PackageReference Include="Microsoft.DotNet.UpgradeAssistant.Extensions.Default.Analyzers" Version="0.3.330701">
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="6.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="6.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="c.cmd">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="f.cmd">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 </Project>

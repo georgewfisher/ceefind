@@ -5,7 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace NewC.Utils
+namespace CeeFind.Utils
 {
     internal class DirectoryUtils
     {

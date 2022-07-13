@@ -1,18 +1,10 @@
-﻿using CeeFind.BetterQueue;
-
-using NewC.Utils;
-
-
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection.Metadata.Ecma335;
-using System.Text;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 
-namespace NewC.BetterQueue
+namespace CeeFind.BetterQueue
 {
     internal class CeeFindQueue
     {
@@ -21,8 +13,8 @@ namespace NewC.BetterQueue
         private Regex fileNameFilterRegex;
         private List<string> insideFileFilter;
         internal List<Regex> InsideFileFilterRegex { get; set; }
-        private DirectoryInfo RootDirectory { get; init; }
-        internal List<string> Root { get; set; }
+        private DirectoryInfo RootDirectory { get; }
+        internal List<string> Root { get; }
         private Stuff stuff;
         private Dictionary<long, QueuedDirectory> preQueue;
         private PriorityQueue<QueuedDirectory, double> queue;
@@ -49,6 +41,10 @@ namespace NewC.BetterQueue
             // Use indexes to allow for fast find
             UseIndexForFilenameSearch();
             MoveFromPreQueueToQueue();
+
+            QueuedDirectory startPath = QueuedDirectory.InitializeRoot(this.RootDirectory, stuff);
+            startPath.IsRoot = true;
+            queue.Enqueue(startPath, int.MinValue);
         }
 
         public void EnqueueSubfolder(DirectoryInfo parent, DirectoryInfo[] subfolders)
@@ -129,8 +125,14 @@ namespace NewC.BetterQueue
             QueuedDirectory qi;
             do
             {
+                if (queue.Count == 0)
+                {
+                    return null;
+                }
                 qi = queue.Dequeue();
-            } while (qi.IsVisited || (done.ContainsKey(qi.Id) && done[qi.Id].IsVisited));
+            }
+            // directories can be queued by both spidering and indexes, deduping has to happen after dequeuing 
+            while (qi.IsVisited || (done.ContainsKey(qi.Id) && done[qi.Id].IsVisited));
 
             qi.Vertex.Visits++;
             qi.IsVisited = true;
