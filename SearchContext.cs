@@ -16,6 +16,5 @@ namespace CeeFind
 
         public bool IsVerbose { get; }
         public bool IncludeBinary { get; }
-        public int Count { get; set; }
     }
 }

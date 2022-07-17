@@ -31,14 +31,9 @@ namespace CeeFind.Utils
             return string.Concat(string.Join('/', root), "/", string.Join('/', path));
         }
 
-        /*internal static long GetHashCodeFromRelativePath(DirectoryInfo rootDirectory, string path)
+        internal static string GetRelativePath(DirectoryInfo rootDirectory, string path)
         {
-            return path.Replace(rootDirectory.FullName, string.Empty).GetHashCode();
-        }*/
-
-        internal static List<string> GetRelativePath(DirectoryInfo rootDirectory, string path)
-        {
-            return path.Replace(rootDirectory.FullName, string.Empty).Split('\\', StringSplitOptions.RemoveEmptyEntries).ToList();
+            return path.Replace(rootDirectory.FullName, string.Empty);
         }
     }
 }

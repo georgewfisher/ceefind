@@ -14,11 +14,14 @@ namespace CeeFind.BetterQueue
 
         public Dictionary<string, List<string>> RegexesToThings { get; set; }
 
+        public Dictionary<string, List<Metrics>> SearchHistory { get; set; }
+
         public Stuff()
         {
             this.Things = new Dictionary<string, Thing>(StringComparer.OrdinalIgnoreCase);
             this.Vertexes = new Dictionary<string, Vertex>(StringComparer.OrdinalIgnoreCase);
             this.RegexesToThings = new Dictionary<string, List<string>>();
+            this.SearchHistory = new Dictionary<string, List<Metrics>>();
         }
 
         public void Clean()
