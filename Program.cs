@@ -47,10 +47,10 @@ namespace CeeFind
             {
                 binaryFiles.Add(extension);
             }
-            string filenameFilterRegex = string.Empty;
+            List<string> filenameFilterRegex = new List<string>();
+            List<string> negativeFilenameFilterRegex = new List<string>();
             bool searchInFiles = false;
             List<string> inFileSearchStrings = new List<string>();
-            int argIndex = 0;
             Program.flags = new HashSet<string>();
             List<Regex> search = new List<Regex>();
             string codebase = Assembly.GetExecutingAssembly().GetName().CodeBase;
@@ -67,38 +67,46 @@ namespace CeeFind
             }
 
             string[] strArrays = args;
+            bool containsDivider = args.Any(a => a == "--");
+            bool filenamePart = true;
+            bool isNegated = false;
             for (int i = 0; i < (int)strArrays.Length; i++)
             {
                 string arg = strArrays[i];
-                if (arg.StartsWith("-"))
+                if (arg == "history" && args.Length == 1)
+                {
+                    ShowHistory();
+                    return;
+                }
+                if (arg == "--")
+                {
+                    filenamePart = false;
+                }
+                else if (arg == "not")
+                {
+                    isNegated = true;
+                }
+                else if (arg.StartsWith("-"))
                 {
                     Program.flags.Add(arg.Substring(1).ToLower());
                 }
-                else if (argIndex == 0)
+                else if (filenamePart)
                 {
-                    if (!filenameFilterRegex.StartsWith("^"))
+                    if (isNegated)
                     {
-                        filenameFilterRegex = string.Concat("^", arg);
+                        negativeFilenameFilterRegex.Add(CleanFilenameFilter(arg));
                     }
-                    if (!filenameFilterRegex.EndsWith("$"))
+                    else if (arg != "*")
                     {
-                        filenameFilterRegex = string.Concat(filenameFilterRegex, "$");
-                    }
-
-                    if (Regex.IsMatch(filenameFilterRegex, "(?<!\\.)\\*"))
-                    {
-                        log.LogWarning(@$"Replacing ""*"" in filename search string ""{arg}"" with regular expression "".*"" to make searches easier to write.");
-                        filenameFilterRegex = Regex.Replace(filenameFilterRegex, "(?<!\\.)\\*", ".*");
+                        filenameFilterRegex.Add(CleanFilenameFilter(arg));
                     }
 
-                    if (filenameFilterRegex == "^.*$")
+                    if (!containsDivider)
                     {
-                        flags.Add("all");
+                        filenamePart = false;
                     }
-
-                    argIndex++;
                 }
-                else if (argIndex > 0)
+                else if (!filenamePart)
                 {
                     if (Regex.IsMatch(arg, $"(?<!\\.)\\*\\."))
                     {
@@ -111,8 +119,12 @@ namespace CeeFind
                 }
             }
 
+            if (filenameFilterRegex.All(f => f == "^.*$") && !negativeFilenameFilterRegex.Any())
+            {
+                flags.Add("all");
+            }
 
-            queue = new CeeFindQueue(stuff, rootDirectory, filenameFilterRegex, inFileSearchStrings);
+            queue = new CeeFindQueue(stuff, rootDirectory, filenameFilterRegex, negativeFilenameFilterRegex, inFileSearchStrings);
             queue.Initialize();
 
             bool isVerbose = Program.flags.Contains("v") || Program.flags.Contains("verbose");
@@ -126,7 +138,7 @@ namespace CeeFind
                 Console.WriteLine($"Including binary files: " + includeBinary);
             }
             SearchContext context = new SearchContext(isVerbose, includeBinary);
-            Metrics metrics = new Metrics(searchInFiles);
+            Metrics metrics = new Metrics(searchInFiles, string.Join(' ', args));
 
             Console.CancelKeyPress += delegate
             {
@@ -140,7 +152,7 @@ namespace CeeFind
 
             if (!Program.flags.Contains("up"))
             {
-                Program.Search( filenameFilterRegex, searchInFiles, results, context, metrics);
+                Program.Search(searchInFiles, results, context, metrics);
             }
             else
             {
@@ -150,9 +162,9 @@ namespace CeeFind
                     {
                         break;
                     }
-                    Program.Search(filenameFilterRegex, searchInFiles, results, context, metrics);
+                    Program.Search(searchInFiles, results, context, metrics);
                     rootDirectory = rootDirectory.Parent;
-                    queue = new CeeFindQueue(stuff, rootDirectory, filenameFilterRegex, inFileSearchStrings);
+                    queue = new CeeFindQueue(stuff, rootDirectory, filenameFilterRegex, negativeFilenameFilterRegex, inFileSearchStrings);
                     queue.Initialize();
                 }
             }
@@ -174,6 +186,42 @@ namespace CeeFind
             }
 
             Finish(true, stateFile, metrics);
+        }
+
+        private static void ShowHistory()
+        {
+            if (!stuff.SearchHistory.ContainsKey(rootDirectory.FullName))
+            {
+                Console.WriteLine("No search history exists for this directory");
+            }
+            else
+            {
+                foreach (Metrics m in stuff.SearchHistory[rootDirectory.FullName])
+                {
+                    Console.WriteLine(m.Args);
+                }
+            }
+        }
+
+        private static string CleanFilenameFilter(string arg)
+        {
+            string filter = arg;
+            if (!filter.StartsWith("^"))
+            {
+                filter = string.Concat("^", filter);
+            }
+            if (!filter.EndsWith("$"))
+            {
+                filter = string.Concat(filter, "$");
+            }
+
+            if (Regex.IsMatch(filter, "(?<!\\.)\\*"))
+            {
+                filter = Regex.Replace(filter, "(?<!\\.)\\*", ".*");
+                log.LogWarning(@$"Replacing ""*"" in filename search string ""{arg}"" with regular expression ""{filter}"" to make searches easier to write.");
+            }
+
+            return filter;
         }
 
         private static void Finish(bool isComplete, string stateFile, Metrics metrics)
@@ -235,7 +283,7 @@ namespace CeeFind
                 {
                     bool showDirName = true;
                     QueuedDirectory startPath = QueuedDirectory.InitializeRoot(rootDirectory, stuff);
-                    Program.SearchFile(startPath, string.Empty, new List<Regex>(), replaceString, replaceResults, result, ref showDirName, context, metrics);
+                    Program.SearchFile(startPath, new List<Regex>(), replaceString, replaceResults, result, ref showDirName, context, metrics);
                 }
                 if (replaceResults.Count <= 0)
                 {
@@ -282,10 +330,9 @@ namespace CeeFind
             }
         }
 
-        private static Metrics Search(string searchString, bool searchInFiles, List<SearchResult> allResults, SearchContext context, Metrics metrics)
+        private static Metrics Search(bool searchInFiles, List<SearchResult> allResults, SearchContext context, Metrics metrics)
         {
             bool isTopExtensionsReportShown = !context.IsVerbose;
-            bool all = flags.Contains("all");
             List<Vertex> verticesWhereObjFound = new List<Vertex>();
             FileInfo[] files;
             FileInfo file;
@@ -355,21 +402,21 @@ namespace CeeFind
                     }
                     file = fileInfoArray[i];
 
-                    if (all || Regex.IsMatch(file.Name, searchString, RegexOptions.IgnoreCase))
-                    {
+                    if (queue.IsFilenameMatch(file.Name))
+                    { 
                         metrics.FileMatchCount++;
                         resultsInDirectory++;
 
                         if (!searchInFiles)
                         {
                             directory.Vertex.LastFinds.Add(DateTime.UtcNow);
-                            if (!all)
+                            if (queue.FileNameFilters.Length != 0)
                             {
                                 verticesWhereObjFound.Add(directory.Vertex);
 
                                 stuff.AddThing(
                                     file.Name,
-                                    searchString,
+                                    queue.FileNameFilters,
                                     new List<string>(),
                                     new List<string>(),
                                     directory.Vertex);
@@ -390,7 +437,7 @@ namespace CeeFind
                         }
                         else
                         {
-                            if (SearchFile(directory, searchString, queue.InsideFileFilterRegex, string.Empty, allResults, file, ref shownDirName, context, metrics))
+                            if (SearchFile(directory, queue.InsideFileFilterRegex, string.Empty, allResults, file, ref shownDirName, context, metrics))
                             {
                                 verticesWhereObjFound.Add(directory.Vertex);
                                 metrics.FileMatchInsideCount++;
@@ -403,9 +450,10 @@ namespace CeeFind
 
                 queue.EnqueueSubfolder(directory.Directory, directory.Directory.GetDirectories());
 
+                // this part finds directories
                 if ((searchInFiles ? false : !Program.flags.Contains("files")))
                 {
-                    if (Regex.IsMatch(directory.Directory.Name, searchString, RegexOptions.IgnoreCase))
+                    if (queue.IsFilenameMatch(directory.Directory.Name))
                     {
                         Console.WriteLine(directory.Directory.FullName);
                         if (Program.flags.Contains("first"))
@@ -423,11 +471,12 @@ namespace CeeFind
 
         private static string ProgressReport(Metrics metrics, Stopwatch sw)
         {
+            string mode = "Inspected";
             if (stuff.SearchHistory.ContainsKey(rootDirectory.FullName))
             {
                 if (!metrics.SearchInFiles)
                 {
-                    List<Metrics> relevantMetrics = stuff.SearchHistory[rootDirectory.FullName].Where(metric => !metric.SearchInFiles).ToList();
+                    List<Metrics> relevantMetrics = stuff.SearchHistory[rootDirectory.FullName].Where(m => m.IsComplete).Where(m => !m.SearchInFiles).ToList();
                     if (relevantMetrics.Any())
                     {
                         return GenerateEtaReport("Inspected", metrics, sw, relevantMetrics);
@@ -435,8 +484,9 @@ namespace CeeFind
                 }
                 else if (metrics.IsProbableDeepScan)
                 {
+                    mode = "Deep Scanned";
                     // search in files, scan many files
-                    List<Metrics> relevantMetrics = stuff.SearchHistory[rootDirectory.FullName].Where(metric => metrics.IsProbableDeepScan).ToList();
+                    List<Metrics> relevantMetrics = stuff.SearchHistory[rootDirectory.FullName].Where(m => m.IsComplete).Where(m => m.IsProbableDeepScan).ToList();
                     if (relevantMetrics.Any())
                     {
                         return GenerateEtaReport("Deep Scanned", metrics, sw, relevantMetrics);
@@ -444,8 +494,9 @@ namespace CeeFind
                 }
                 else
                 {
+                    mode = "Shallow Scanned";
                     // search in files, scan few files
-                    List<Metrics> relevantMetrics = stuff.SearchHistory[rootDirectory.FullName].Where(metric => metric.SearchInFiles && !metrics.IsProbableDeepScan).ToList();
+                    List<Metrics> relevantMetrics = stuff.SearchHistory[rootDirectory.FullName].Where(m => m.IsComplete).Where(m => m.SearchInFiles && !metrics.IsProbableDeepScan).ToList();
                     if (relevantMetrics.Any())
                     {
                         return GenerateEtaReport("Shallow Scanned", metrics, sw, relevantMetrics);
@@ -454,27 +505,49 @@ namespace CeeFind
             }
             
             
-            return $"Inspected {metrics.FileCount} files.";
+            return $"{mode} {metrics.FileCount} files.";
         }
 
         private static string GenerateEtaReport(string action, Metrics metrics, Stopwatch sw, List<Metrics> relevantMetrics)
         {
             // it's possible to scale the duration the completed scale if multiple are run, but this logic is convoluted
-            List<double> durations = relevantMetrics.Where(m => m.IsComplete).Select(m => m.Duration.TotalSeconds).OrderBy(m => m).ToList();
+            List<double> durations = relevantMetrics.Select(m => m.Duration.TotalSeconds).OrderBy(m => m).ToList();
+            List<int> fileCounts = relevantMetrics.Select(m => m.FileCount).OrderBy(m => m).ToList();
             double medianDuration = durations[durations.Count / 2];
-            double timeRemaining = Math.Round(medianDuration - sw.Elapsed.TotalSeconds, 1);
-            double percentComplete = Math.Round(sw.Elapsed.TotalSeconds / medianDuration * 100);
+            double timeRemainingViaTimeEstimate = medianDuration - sw.Elapsed.TotalSeconds;
+            double percentCompleteViaTimeEstimate = sw.Elapsed.TotalSeconds / medianDuration * 100;
+
+            double timeRemainingViaFileCount = (fileCounts[fileCounts.Count / 2] / metrics.FileCount) * sw.Elapsed.TotalSeconds;
+            double percentCompleteViaFileCount = (double)metrics.FileCount / fileCounts[fileCounts.Count / 2] * 100;
+
+            double timeRemaining = (timeRemainingViaTimeEstimate + timeRemainingViaFileCount) / 2;
+            int percentComplete = (int)((percentCompleteViaTimeEstimate + percentCompleteViaFileCount) / 2);
+
             if (timeRemaining > 0)
             {
-                return $"{action} {metrics.FileCount} files. Est. {percentComplete}% with time remaining: {timeRemaining}s";
+                return $"{action} {metrics.FileCount} files. Est. {percentComplete}% with time remaining: <{HumanTime(timeRemaining)}";
             }
             else
             {
-                return $"{action} {metrics.FileCount} files. Taking longer than normal. Median scan time for this directory is {Math.Round(medianDuration), 1}s";
+                return $"{action} {metrics.FileCount} files. Taking longer than normal. Median scan time for this directory is <{HumanTime(timeRemainingViaTimeEstimate)}, however, based on progress this is more likely to be ~{HumanTime(timeRemainingViaFileCount)}";
             }
         }
 
-        private static bool SearchFile(QueuedDirectory currentPath, string filenameSearchRegex, List<Regex> search, string searchStr, List<SearchResult> allResults, FileInfo file, ref bool showDirName, SearchContext context, Metrics metrics)
+        private static string HumanTime(double seconds)
+        {
+            if (seconds < 20)
+            {
+                return ((int)Math.Ceiling(seconds / 5) * 5).ToString() + "s";
+            }
+            else if (seconds < 60)
+            {
+                return ((int)Math.Ceiling(seconds / 10) * 10).ToString() + "s";
+            }
+            
+            return ((int)Math.Ceiling(seconds / 60)).ToString() + "m";
+        }
+
+        private static bool SearchFile(QueuedDirectory currentPath, List<Regex> search, string searchStr, List<SearchResult> allResults, FileInfo file, ref bool showDirName, SearchContext context, Metrics metrics)
         {
             if (!context.IncludeBinary)
             {
@@ -621,7 +694,7 @@ namespace CeeFind
 
                             stuff.AddThing(
                                 file.Name,
-                                filenameSearchRegex,
+                                queue.FileNameFilters,
                                 results.Matches.Select(m => m.RegexMethod).ToList(),
                                 capturedItems,
                                 currentPath.Vertex);

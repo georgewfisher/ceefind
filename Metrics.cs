@@ -20,19 +20,26 @@ namespace CeeFind
         public Dictionary<string, long> ExcludedBinaries { get; set; }
         public DateTime SearchDate { get; set; }
         public bool IsComplete { get; set; }
+        public string Args { get; set; }
 
         // summative calculated metrics
         public bool IsFileNameSearchWithHumanReadableResults { get { return !SearchInFiles && FileMatchCount < 1000; } }
         public bool IsFileSearchWithHumanReadableResults { get { return SearchInFiles && FileMatchInsideCount < 1000; } }
         private const double PERCENT_READ_REQUIRED_DEEP_SCAN = 0.05; // 5%
-        public bool IsProbableDeepScan { get { return SearchInFiles && FileMatchCount / FileCount > PERCENT_READ_REQUIRED_DEEP_SCAN; } }
+        public bool IsProbableDeepScan
+        {
+            get {
+                return SearchInFiles && (double)FileMatchCount / FileCount > PERCENT_READ_REQUIRED_DEEP_SCAN;
+            }
+        }
 
-        public Metrics(bool searchInFiles)
+        public Metrics(bool searchInFiles, string args)
         {
             ScanSizeByExtension = new Dictionary<string, long>();
             ExcludedBinaries = new Dictionary<string, long>();
             SearchDate = DateTime.UtcNow;
             SearchInFiles = searchInFiles;
+            Args = args;
         }
 
         internal void Clean()

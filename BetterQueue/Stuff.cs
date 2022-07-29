@@ -42,7 +42,7 @@ namespace CeeFind.BetterQueue
             }
         }
 
-        internal void AddThing(string filename, string filenameRegex, List<string> insideRegex, List<string> insideCapture, Vertex v)
+        internal void AddThing(string filename, string[] filenameRegexes, List<string> insideRegex, List<string> insideCapture, Vertex v)
         {
             if (Things.ContainsKey(filename))
             {
@@ -61,16 +61,19 @@ namespace CeeFind.BetterQueue
                 Things.Add(filename, new Thing(insideRegex, insideCapture, filename, v.Name));
             }
 
-            if (RegexesToThings.ContainsKey(filenameRegex))
+            foreach (string filenameRegex in filenameRegexes)
             {
-                if (!RegexesToThings[filenameRegex].Contains(filename))
+                if (RegexesToThings.ContainsKey(filenameRegex))
                 {
-                    RegexesToThings[filenameRegex].Add(filename);
+                    if (!RegexesToThings[filenameRegex].Contains(filename))
+                    {
+                        RegexesToThings[filenameRegex].Add(filename);
+                    }
                 }
-            }
-            else
-            {
-                RegexesToThings[filenameRegex] = new List<string>() { filename };
+                else
+                {
+                    RegexesToThings[filenameRegex] = new List<string>() { filename };
+                }
             }
         }
     }

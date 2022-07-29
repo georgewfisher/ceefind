@@ -9,8 +9,9 @@ namespace CeeFind.BetterQueue
     internal class CeeFindQueue
     {
         private Dictionary<int, QueuedDirectory> done = new Dictionary<int, QueuedDirectory>();
-        private string fileNameFilter;
-        private Regex fileNameFilterRegex;
+        internal string[] FileNameFilters { get; }
+        private Regex[] FileNameFilterRegex { get; }
+        private Regex[] negativeFileNameFilterRegex;
         private List<string> insideFileFilter;
         internal List<Regex> InsideFileFilterRegex { get; set; }
         private DirectoryInfo RootDirectory { get; }
@@ -22,10 +23,16 @@ namespace CeeFind.BetterQueue
         private readonly long INDEX_LOOKUP_SCORE = 1000000;
         private readonly long BASE_SCORE = 100;
 
-        public CeeFindQueue(Stuff stuff, DirectoryInfo rootDirectory, string fileNameFilter, List<string> fileFilterRegex)
+        public CeeFindQueue(
+            Stuff stuff,
+            DirectoryInfo rootDirectory,
+            List<string> fileNameFilter,
+            List<string> negativeFilenameFilter,
+            List<string> fileFilterRegex)
         {
-            this.fileNameFilter = fileNameFilter;
-            this.fileNameFilterRegex = new Regex(fileNameFilter, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+            this.FileNameFilters = fileNameFilter.ToArray();
+            this.FileNameFilterRegex = fileNameFilter.Select(f => new Regex(f, RegexOptions.IgnoreCase | RegexOptions.Compiled)).ToArray();
+            this.negativeFileNameFilterRegex = negativeFilenameFilter.Select(f => new Regex(f, RegexOptions.IgnoreCase | RegexOptions.Compiled)).ToArray();
             this.insideFileFilter = fileFilterRegex;
             this.InsideFileFilterRegex = fileFilterRegex.Select(f => new Regex(f, RegexOptions.IgnoreCase | RegexOptions.Compiled)).ToList();
             this.RootDirectory = new DirectoryInfo(Directory.GetCurrentDirectory());
@@ -175,18 +182,22 @@ namespace CeeFind.BetterQueue
 
         private void UseIndexForFilenameSearch()
         {
-            if (stuff.RegexesToThings.ContainsKey(this.fileNameFilter))
+            for (int i = 0; i < FileNameFilters.Length; i++)
             {
-                // This exact regex has been used before
-                QueueUpThing(stuff.RegexesToThings[this.fileNameFilter], INDEX_LOOKUP_SCORE);
-            }
-
-            // Something was found that matches this regex
-            foreach (string search in stuff.Things.Keys)
-            {
-                if (fileNameFilterRegex.IsMatch(search))
+                string filenameFilter = FileNameFilters[i];
+                if (stuff.RegexesToThings.ContainsKey(filenameFilter))
                 {
-                    QueueUpThing(new List<string>() { search }, INDEX_LOOKUP_SCORE);
+                    // This exact regex has been used before
+                    QueueUpThing(stuff.RegexesToThings[filenameFilter], INDEX_LOOKUP_SCORE);
+                }
+
+                // Something was found that matches this regex
+                foreach (string search in stuff.Things.Keys)
+                {
+                    if (FileNameFilterRegex[i].IsMatch(search))
+                    {
+                        QueueUpThing(new List<string>() { search }, INDEX_LOOKUP_SCORE);
+                    }
                 }
             }
         }
@@ -292,6 +303,38 @@ namespace CeeFind.BetterQueue
         internal bool IsMore()
         {
             return this.queue.Count > 0;
+        }
+
+        internal bool IsFilenameMatch(string name)
+        {
+            if (FileNameFilterRegex.Length > 0)
+            {
+                // positive matches are logical OR operations i.e. one of *.py OR *.jsx
+                bool anyMatch = false;
+                for (int i = 0; i < this.FileNameFilterRegex.Length; i++)
+                {
+                    if (this.FileNameFilterRegex[i].IsMatch(name))
+                    {
+                        anyMatch |= true;
+                    }
+                }
+
+                if (!anyMatch)
+                {
+                    return false;
+                }
+            }
+
+            // negative matches are logical AND: !*.js AND !*.exe
+            for (int i = 0; i < this.negativeFileNameFilterRegex.Length; i++)
+            {
+                if (this.negativeFileNameFilterRegex[i].IsMatch(name))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
     }
 }
