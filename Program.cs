@@ -547,7 +547,7 @@ namespace CeeFind
                 double percentCompleteViaFileCount = (double)metrics.FileCount / fileCounts[fileCounts.Count / 2] * 100;
                 double timeRemaining;
                 int percentComplete;
-                double timeRemainingViaTimeEstimate = 0.0;
+                double medianDuration = 0.0;
                 if (useFileCountOnly)
                 {
                     timeRemaining = timeRemainingViaFileCount;
@@ -556,8 +556,8 @@ namespace CeeFind
                 else
                 {
                     List<double> durations = relevantMetrics.Select(m => m.Duration.TotalSeconds).OrderBy(m => m).ToList();
-                    double medianDuration = durations[durations.Count / 2];
-                    timeRemainingViaTimeEstimate = medianDuration - sw.Elapsed.TotalSeconds;
+                    medianDuration = durations[durations.Count / 2];
+                    double timeRemainingViaTimeEstimate = medianDuration - sw.Elapsed.TotalSeconds;
                     double percentCompleteViaTimeEstimate = sw.Elapsed.TotalSeconds / medianDuration * 100;
                     timeRemaining = (timeRemainingViaTimeEstimate + timeRemainingViaFileCount) / 2;
                     percentComplete = (int)((percentCompleteViaTimeEstimate + percentCompleteViaFileCount) / 2);
@@ -567,13 +567,9 @@ namespace CeeFind
                 {
                     return $"{action} {metrics.FileCount} files. Est. {percentComplete}% with time remaining: <{HumanTime(timeRemaining)}";
                 }
-                else if (timeRemaining > 0)
-                {
-                    return $"{action} {metrics.FileCount} files. Est. time remaining: <{HumanTime(timeRemaining)} - possible increase in file count";
-                }
                 else if (!useFileCountOnly)
                 {
-                    return $"{action} {metrics.FileCount} files. Taking longer than normal. Median scan time for this directory is <{HumanTime(timeRemainingViaTimeEstimate)}, however, based on progress this is more likely to be ~{HumanTime(timeRemainingViaFileCount)}";
+                    return $"{action} {metrics.FileCount} files. Taking longer than normal. Median scan time for this directory is <{HumanTime(medianDuration)}, however, based on progress this is more likely to be ~{HumanTime(timeRemainingViaFileCount)}";
                 }
                 else
                 {
@@ -618,7 +614,7 @@ namespace CeeFind
             string line;
             SimpleMatchCollection smc;
             string lastPart;
-            int lineCount = 0;
+            int lineCount = 1;
             List<SearchResult> matchList = new List<SearchResult>();
             try
             {
