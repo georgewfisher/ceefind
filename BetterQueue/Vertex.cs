@@ -31,7 +31,7 @@ namespace CeeFind.BetterQueue
         public Vertex(string name, DirectoryInfo path)
         {
             Name = name;
-            this.AbsolutePaths = new HashSet<string>() { path.FullName };
+            this.AbsolutePaths = new HashSet<string>() { };
             Visits = 1;
             LastFinds = new List<DateTime>();
             LastFindCount = new List<long>();

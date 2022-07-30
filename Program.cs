@@ -10,7 +10,6 @@ using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using CeeFind.Utils;
 using System.Diagnostics;
-using System.Security.Principal;
 
 namespace CeeFind
 {
@@ -247,20 +246,28 @@ namespace CeeFind
 
         private static void TopExtensionsReport(Metrics metrics)
         {
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine("Top file types skipped (binary and suspected binary):");
-            GenerateExtensionReport(metrics.Top5(metrics.ExcludedBinaries));
-            Console.WriteLine("Top extensions read:");
-            GenerateExtensionReport(metrics.Top5(metrics.ScanSizeByExtension));
-            Console.ResetColor();
+            GenerateExtensionReport(
+                "Top file types skipped (binary and suspected binary):", 
+                metrics.Top5(metrics.ExcludedBinaries));
+            GenerateExtensionReport(
+                "Top extensions read:",
+                metrics.Top5(metrics.ScanSizeByExtension));
         }
 
-        private static void GenerateExtensionReport(IEnumerable<KeyValuePair<string, long>> extensions)
+        private static void GenerateExtensionReport(
+            string description,
+            IEnumerable<KeyValuePair<string, long>> extensions)
         {
-            List<string> topExtensions = extensions.Select(ext => $"{ext.Key} -> {Math.Round((double)ext.Value / 1024 / 1024, 1)}mb").ToList();
-            foreach (string topExt in topExtensions)
+            if (extensions.Any())
             {
-                Console.WriteLine("\t" + topExt);
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine(description);
+                List<string> topExtensions = extensions.Select(ext => $"{ext.Key} -> {Math.Round((double)ext.Value / 1024 / 1024, 1)}mb").ToList();
+                foreach (string topExt in topExtensions)
+                {
+                    Console.WriteLine("\t" + topExt);
+                }
+                Console.ResetColor();
             }
         }
 
@@ -407,6 +414,13 @@ namespace CeeFind
                         metrics.FileMatchCount++;
                         resultsInDirectory++;
 
+                        // Remember directories where something was found (for index)
+                        string fullname = directory.Directory.FullName;
+                        if (!directory.Vertex.AbsolutePaths.Contains(fullname))
+                        {
+                            directory.Vertex.AbsolutePaths.Add(fullname);
+                        }
+
                         if (!searchInFiles)
                         {
                             directory.Vertex.LastFinds.Add(DateTime.UtcNow);
@@ -446,7 +460,10 @@ namespace CeeFind
                     }
                 }
 
-                directory.Vertex.LastFindCount.Add(resultsInDirectory);
+                if (resultsInDirectory > 0)
+                {
+                    directory.Vertex.LastFindCount.Add(resultsInDirectory);
+                }
 
                 queue.EnqueueSubfolder(directory.Directory, directory.Directory.GetDirectories());
 
@@ -474,33 +491,41 @@ namespace CeeFind
             string mode = "Inspected";
             if (stuff.SearchHistory.ContainsKey(rootDirectory.FullName))
             {
+                List<Metrics> metricsFromDir = stuff.SearchHistory[rootDirectory.FullName].Where(m => m.IsComplete).ToList();
+
                 if (!metrics.SearchInFiles)
                 {
-                    List<Metrics> relevantMetrics = stuff.SearchHistory[rootDirectory.FullName].Where(m => m.IsComplete).Where(m => !m.SearchInFiles).ToList();
+                    List<Metrics> relevantMetrics = metricsFromDir.Where(m => !m.SearchInFiles).ToList();
                     if (relevantMetrics.Any())
                     {
-                        return GenerateEtaReport("Inspected", metrics, sw, relevantMetrics);
+                        return GenerateEtaReport(mode, metrics, sw, relevantMetrics, false);
                     }
                 }
                 else if (metrics.IsProbableDeepScan)
                 {
                     mode = "Deep Scanned";
                     // search in files, scan many files
-                    List<Metrics> relevantMetrics = stuff.SearchHistory[rootDirectory.FullName].Where(m => m.IsComplete).Where(m => m.IsProbableDeepScan).ToList();
+                    List<Metrics> relevantMetrics = metricsFromDir.Where(m => m.IsProbableDeepScan).ToList();
                     if (relevantMetrics.Any())
                     {
-                        return GenerateEtaReport("Deep Scanned", metrics, sw, relevantMetrics);
+                        return GenerateEtaReport(mode, metrics, sw, relevantMetrics, false);
                     }
                 }
                 else
                 {
                     mode = "Shallow Scanned";
                     // search in files, scan few files
-                    List<Metrics> relevantMetrics = stuff.SearchHistory[rootDirectory.FullName].Where(m => m.IsComplete).Where(m => m.SearchInFiles && !metrics.IsProbableDeepScan).ToList();
+                    List<Metrics> relevantMetrics = metricsFromDir.Where(m => m.SearchInFiles && !metrics.IsProbableDeepScan).ToList();
                     if (relevantMetrics.Any())
                     {
-                        return GenerateEtaReport("Shallow Scanned", metrics, sw, relevantMetrics);
+                        return GenerateEtaReport(mode, metrics, sw, relevantMetrics, false);
                     }
+                }
+
+                // if no pattern to scan type, just approximate
+                if (metricsFromDir.Any())
+                {
+                    return GenerateEtaReport("Scanned", metrics, sw, metricsFromDir, true);
                 }
             }
             
@@ -508,29 +533,54 @@ namespace CeeFind
             return $"{mode} {metrics.FileCount} files.";
         }
 
-        private static string GenerateEtaReport(string action, Metrics metrics, Stopwatch sw, List<Metrics> relevantMetrics)
+        private static string GenerateEtaReport(
+            string action, Metrics metrics, Stopwatch sw, List<Metrics> relevantMetrics,
+            bool useFileCountOnly
+            )
         {
-            // it's possible to scale the duration the completed scale if multiple are run, but this logic is convoluted
-            List<double> durations = relevantMetrics.Select(m => m.Duration.TotalSeconds).OrderBy(m => m).ToList();
-            List<int> fileCounts = relevantMetrics.Select(m => m.FileCount).OrderBy(m => m).ToList();
-            double medianDuration = durations[durations.Count / 2];
-            double timeRemainingViaTimeEstimate = medianDuration - sw.Elapsed.TotalSeconds;
-            double percentCompleteViaTimeEstimate = sw.Elapsed.TotalSeconds / medianDuration * 100;
-
-            double timeRemainingViaFileCount = (fileCounts[fileCounts.Count / 2] / metrics.FileCount) * sw.Elapsed.TotalSeconds;
-            double percentCompleteViaFileCount = (double)metrics.FileCount / fileCounts[fileCounts.Count / 2] * 100;
-
-            double timeRemaining = (timeRemainingViaTimeEstimate + timeRemainingViaFileCount) / 2;
-            int percentComplete = (int)((percentCompleteViaTimeEstimate + percentCompleteViaFileCount) / 2);
-
-            if (timeRemaining > 0)
+            if (relevantMetrics.Any())
             {
-                return $"{action} {metrics.FileCount} files. Est. {percentComplete}% with time remaining: <{HumanTime(timeRemaining)}";
+                // it's possible to scale the duration the completed scale if multiple are run, but this logic is convoluted
+                List<int> fileCounts = relevantMetrics.Select(m => m.FileCount).OrderBy(m => m).ToList();
+
+                double timeRemainingViaFileCount = (fileCounts[fileCounts.Count / 2] / metrics.FileCount) * sw.Elapsed.TotalSeconds;
+                double percentCompleteViaFileCount = (double)metrics.FileCount / fileCounts[fileCounts.Count / 2] * 100;
+                double timeRemaining;
+                int percentComplete;
+                double timeRemainingViaTimeEstimate = 0.0;
+                if (useFileCountOnly)
+                {
+                    timeRemaining = timeRemainingViaFileCount;
+                    percentComplete = (int)percentCompleteViaFileCount;
+                }
+                else
+                {
+                    List<double> durations = relevantMetrics.Select(m => m.Duration.TotalSeconds).OrderBy(m => m).ToList();
+                    double medianDuration = durations[durations.Count / 2];
+                    timeRemainingViaTimeEstimate = medianDuration - sw.Elapsed.TotalSeconds;
+                    double percentCompleteViaTimeEstimate = sw.Elapsed.TotalSeconds / medianDuration * 100;
+                    timeRemaining = (timeRemainingViaTimeEstimate + timeRemainingViaFileCount) / 2;
+                    percentComplete = (int)((percentCompleteViaTimeEstimate + percentCompleteViaFileCount) / 2);
+                }
+
+                if (timeRemaining > 0 && percentComplete < 100)
+                {
+                    return $"{action} {metrics.FileCount} files. Est. {percentComplete}% with time remaining: <{HumanTime(timeRemaining)}";
+                }
+                else if (timeRemaining > 0)
+                {
+                    return $"{action} {metrics.FileCount} files. Est. time remaining: <{HumanTime(timeRemaining)} - possible increase in file count";
+                }
+                else if (!useFileCountOnly)
+                {
+                    return $"{action} {metrics.FileCount} files. Taking longer than normal. Median scan time for this directory is <{HumanTime(timeRemainingViaTimeEstimate)}, however, based on progress this is more likely to be ~{HumanTime(timeRemainingViaFileCount)}";
+                }
+                else
+                {
+                    return $"{action} {metrics.FileCount} files. Est. time remaining ~{HumanTime(timeRemainingViaFileCount)}";
+                }
             }
-            else
-            {
-                return $"{action} {metrics.FileCount} files. Taking longer than normal. Median scan time for this directory is <{HumanTime(timeRemainingViaTimeEstimate)}, however, based on progress this is more likely to be ~{HumanTime(timeRemainingViaFileCount)}";
-            }
+            return String.Empty;
         }
 
         private static string HumanTime(double seconds)

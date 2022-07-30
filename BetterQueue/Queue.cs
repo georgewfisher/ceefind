@@ -72,24 +72,14 @@ namespace CeeFind.BetterQueue
                     vertex = new Vertex(subfolder.Name, subfolder);
                     stuff.Vertexes.Add(subfolder.Name, vertex);
                 }
-                else
-                {
-                    string fullname = subfolder.FullName;
-                    if (!vertex.AbsolutePaths.Contains(fullname))
-                    {
-                        vertex.AbsolutePaths.Add(subfolder.FullName);
-                    }
-                }
                 AddAdjacents(subfolder, parentHash);
                 score = GenerateScore(vertex, vertex, score, 0);
-                score = BoostScoreBasedOnWhenLastSeen(score, subfolder.LastWriteTimeUtc);
+                score = BoostScoreBasedOnDate(score, subfolder.LastWriteTimeUtc);
                 QueueUpVertex(score, vertex, subfolder, parentHash);
 
             }
             MoveFromPreQueueToQueue();
         }
-
-
 
         internal void AddAdjacents(DirectoryInfo directory, int parentHash)
         {
@@ -167,7 +157,7 @@ namespace CeeFind.BetterQueue
             score = AdjustScoreForRarity(score, vertex.AbsolutePaths.Count);
             score = AdjustScoreForFrequency(score, vertex.LastFinds.Count);
             score = vertex.LastFinds.Count > 0 ? AdjustScoreForFrequency(score, vertex.Visits / vertex.LastFinds.Count) : 1.0 / vertex.Visits;
-            score = vertex.LastFinds.Any() ? BoostScoreBasedOnWhenLastSeen(score, vertex.LastFinds.Last()) : score;
+            score = vertex.LastFinds.Any() ? BoostScoreBasedOnDate(score, vertex.LastFinds.Last()) : score;
             return score;
         }
 
@@ -236,7 +226,7 @@ namespace CeeFind.BetterQueue
             {
                 if (thing.Regexes.ContainsKey(insideSearchStr))
                 {
-                    insideSearchFactor = BoostScoreBasedOnWhenLastSeen(insideSearchFactor, thing.Regexes[insideSearchStr]);
+                    insideSearchFactor = BoostScoreBasedOnDate(insideSearchFactor, thing.Regexes[insideSearchStr]);
                 }
             }
 
@@ -246,7 +236,7 @@ namespace CeeFind.BetterQueue
                 {
                     if (insideSearch.IsMatch(foundString))
                     {
-                        insideSearchFactor = BoostScoreBasedOnWhenLastSeen(insideSearchFactor, thing.FoundStrings[foundString]);
+                        insideSearchFactor = BoostScoreBasedOnDate(insideSearchFactor, thing.FoundStrings[foundString]);
                     }
                 }
             }
@@ -254,7 +244,7 @@ namespace CeeFind.BetterQueue
             QueueUpVertex(thing.VertexNames, score * insideSearchFactor);
         }
 
-        private static double BoostScoreBasedOnWhenLastSeen(double score, DateTime date)
+        private static double BoostScoreBasedOnDate(double score, DateTime date)
         {
             double daysSinceLastSeen = DateTime.UtcNow.Subtract(date).TotalDays;
             score = AdjustScoreForRarity(score, daysSinceLastSeen);
@@ -267,6 +257,11 @@ namespace CeeFind.BetterQueue
             return score;
         }
 
+        /// <summary>
+        /// Queue up vertices (static directories)
+        /// </summary>
+        /// <param name="vertexName"></param>
+        /// <param name="score"></param>
         private void QueueUpVertex(string vertexName, double score)
         {
             Vertex vertex = stuff.Vertexes[vertexName];
@@ -274,7 +269,7 @@ namespace CeeFind.BetterQueue
             {
                 if (path.Contains(this.RootDirectory.FullName, StringComparison.OrdinalIgnoreCase))
                 {
-                    score = BoostScoreBasedOnWhenLastSeen(score, vertex.LastFinds.Last());
+                    score = BoostScoreBasedOnDate(score, vertex.LastFinds.Last());
                     score = AdjustScoreForFrequency(score, vertex.LastFinds.Count);
                     DirectoryInfo directory = new DirectoryInfo(path);
                     QueueUpVertex(score, vertex, directory, directory.Parent.FullName.GetHashCode());
