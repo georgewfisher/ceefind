@@ -154,7 +154,7 @@ namespace CeeFind
                 {
                     if (Regex.IsMatch(arg, $"(?<!\\.)\\*\\."))
                     {
-                        warnings.Add(@$"Replacing ""*."" in file search string ""{arg}"" with regular expression ""\\..*"" to make searches easier to write.");
+                        warnings.Add(@$"Using ""*."" in file search string ""{arg}"" with regular expression ""\\..*"" to make searches easier to write.");
                         arg = Regex.Replace(arg, "(?<!\\.)\\*\\.", "\\..*");
                     }
 
