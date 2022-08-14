@@ -1,7 +1,10 @@
-﻿using System;
+﻿using CeeFind.Utils;
+
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace CeeFind.BetterQueue
@@ -11,11 +14,12 @@ namespace CeeFind.BetterQueue
         private Dictionary<int, QueuedDirectory> done = new Dictionary<int, QueuedDirectory>();
         internal string[] FileNameFilters { get; }
         private Regex[] FileNameFilterRegex { get; }
-        private Regex[] negativeFileNameFilterRegex;
+        private Regex[] NegativeFileNameFilterRegex { get; }
         private List<string> insideFileFilter;
         internal List<Regex> InsideFileFilterRegex { get; set; }
         private DirectoryInfo RootDirectory { get; }
         internal List<string> Root { get; }
+        private int RootHash { get; }
         private Stuff stuff;
         private Dictionary<long, QueuedDirectory> preQueue;
         private PriorityQueue<QueuedDirectory, double> queue;
@@ -32,15 +36,49 @@ namespace CeeFind.BetterQueue
         {
             this.FileNameFilters = fileNameFilter.ToArray();
             this.FileNameFilterRegex = fileNameFilter.Select(f => new Regex(f, RegexOptions.IgnoreCase | RegexOptions.Compiled)).ToArray();
-            this.negativeFileNameFilterRegex = negativeFilenameFilter.Select(f => new Regex(f, RegexOptions.IgnoreCase | RegexOptions.Compiled)).ToArray();
+            this.NegativeFileNameFilterRegex = negativeFilenameFilter.Select(f => new Regex(f, RegexOptions.IgnoreCase | RegexOptions.Compiled)).ToArray();
             this.insideFileFilter = fileFilterRegex;
             this.InsideFileFilterRegex = fileFilterRegex.Select(f => new Regex(f, RegexOptions.IgnoreCase | RegexOptions.Compiled)).ToList();
             this.RootDirectory = new DirectoryInfo(Directory.GetCurrentDirectory());
             List<string> rootPathList = rootDirectory.FullName.Split('\\').ToList();
             this.Root = rootPathList;
+            this.RootHash = rootDirectory.FullName.GetHashCode();
             this.stuff = stuff;
             this.queue = new PriorityQueue<QueuedDirectory, double>();
             this.preQueue = new Dictionary<long, QueuedDirectory>();
+        }
+
+        public override string ToString()
+        {
+            string filesPositive = String.Join(" && ", FileNameFilterRegex.Select(r => r.ToString()));
+            string filesNegative = String.Join(" || ", NegativeFileNameFilterRegex.Select(r => r.ToString()));
+
+            StringBuilder sb = new StringBuilder();
+            sb.Append("files: ");
+            if (FileNameFilterRegex.Any() && NegativeFileNameFilterRegex.Any())
+            {
+                sb.Append($"({filesPositive}) && !({filesNegative})");
+            }
+            else if (FileNameFilterRegex.Any())
+            {
+                sb.Append($"{filesPositive}");
+            }
+            else if (NegativeFileNameFilterRegex.Any())
+            {
+                sb.Append($"!({filesNegative})");
+            }
+            else
+            {
+                sb.Append("*");
+            }
+
+            if (InsideFileFilterRegex.Any())
+            {
+                string inFiles = String.Join(" && ", InsideFileFilterRegex.Select(r => r.ToString()));
+                sb.Append(", contents: ");
+                sb.Append(inFiles);
+            }
+            return sb.ToString();
         }
 
         public void Initialize()
@@ -69,10 +107,10 @@ namespace CeeFind.BetterQueue
                 double score = BASE_SCORE;
                 if (vertex == null)
                 {
-                    vertex = new Vertex(subfolder.Name, subfolder);
+                    vertex = new Vertex(subfolder.Name);
                     stuff.Vertexes.Add(subfolder.Name, vertex);
                 }
-                AddAdjacents(subfolder, parentHash);
+
                 score = GenerateScore(vertex, vertex, score, 0);
                 score = BoostScoreBasedOnDate(score, subfolder.LastWriteTimeUtc);
                 QueueUpVertex(score, vertex, subfolder, parentHash);
@@ -81,39 +119,29 @@ namespace CeeFind.BetterQueue
             MoveFromPreQueueToQueue();
         }
 
-        internal void AddAdjacents(DirectoryInfo directory, int parentHash)
+        public void AddAdjacents(DirectoryInfo start, Vertex startVertex, int firstParentHash)
         {
-            QueuedDirectory current;
-            if (done.TryGetValue(parentHash, out QueuedDirectory qd))
+            int currentParentHash = firstParentHash;
+            QueuedDirectory currentQueuedDirectory;
+            int depth = 1;
+            while (currentParentHash != RootHash)
             {
-                current = qd;
-            }
-            else
-            {
-                return;
-            }
-
-            if (!stuff.Vertexes.TryGetValue(current.Directory.Name, out Vertex start))
-            {
-                return;
-            }
-
-            for (int i = 0; i < 2; i++)
-            {
-                if (stuff.Vertexes.TryGetValue(current.Directory.Name, out Vertex other))
+                if (!done.TryGetValue(currentParentHash, out currentQueuedDirectory))
                 {
-                    Vertex.UpdateAdjacents(i, other, start);
-                    Vertex.UpdateAdjacents(-i, start, other);
+                    break;
                 }
+                UpdateAdjacents(depth, currentQueuedDirectory, startVertex);
+                currentParentHash = currentQueuedDirectory.Parent;
+                depth++;
+            }
+        }
 
-                if (done.TryGetValue(parentHash, out qd))
-                {
-                    current = qd;
-                }
-                else
-                {
-                    return;
-                }
+        private void UpdateAdjacents(int distance, QueuedDirectory current, Vertex start)
+        {
+            if (stuff.Vertexes.TryGetValue(current.Directory.Name, out Vertex other))
+            {
+                Vertex.UpdateAdjacents(distance, other, start);
+                Vertex.UpdateAdjacents(-distance, start, other);
             }
         }
 
@@ -143,21 +171,34 @@ namespace CeeFind.BetterQueue
             {
                 return score;
             }
-            
+
             // if the subfolder is known it can be scored, otherwise it can be ignored
             // adjust based on context of adjacent paths
-            foreach (Edge adjacent in vertex.Adjacents.Values)
+            if (vertex.Adjacents != null)
             {
-                if (stuff.Vertexes.TryGetValue(adjacent.VertexName, out Vertex subVertex)) {
-                    score = AdjustScoreForFrequency(GenerateScore(origin, subVertex, BASE_SCORE, depth + 1), Math.Abs(adjacent.RelativePosition.Min()));
+                foreach (Edge adjacent in vertex.Adjacents.Values)
+                {
+                    if (stuff.Vertexes.TryGetValue(adjacent.VertexName, out Vertex subVertex))
+                    {
+                        score = AdjustScoreForFrequency(GenerateScore(origin, subVertex, BASE_SCORE, depth + 1), Math.Abs(adjacent.RelativePosition.Min()));
+                    }
                 }
             }
 
-            score = vertex.LastFindCount.Count > 0 ? AdjustScoreForRarity(score, vertex.LastFindCount.Average()) : score;
-            score = AdjustScoreForRarity(score, vertex.AbsolutePaths.Count);
-            score = AdjustScoreForFrequency(score, vertex.LastFinds.Count);
-            score = vertex.LastFinds.Count > 0 ? AdjustScoreForFrequency(score, vertex.Visits / vertex.LastFinds.Count) : 1.0 / vertex.Visits;
-            score = vertex.LastFinds.Any() ? BoostScoreBasedOnDate(score, vertex.LastFinds.Last()) : score;
+            if (vertex.LastFindCount != null)
+            {
+                score = vertex.LastFindCount.Count > 0 ? AdjustScoreForRarity(score, vertex.LastFindCount.Average()) : score;
+            }
+            if (vertex.AbsolutePaths != null)
+            {
+                score = AdjustScoreForRarity(score, vertex.AbsolutePaths.Count);
+            }
+            if (vertex.LastFinds != null)
+            {
+                score = AdjustScoreForFrequency(score, vertex.LastFinds.Count);
+                score = vertex.LastFinds.Count > 0 ? AdjustScoreForFrequency(score, vertex.Visits / vertex.LastFinds.Count) : 1.0 / vertex.Visits;
+                score = vertex.LastFinds.Any() ? BoostScoreBasedOnDate(score, vertex.LastFinds.Last()) : score;
+            }
             return score;
         }
 
@@ -265,16 +306,59 @@ namespace CeeFind.BetterQueue
         private void QueueUpVertex(string vertexName, double score)
         {
             Vertex vertex = stuff.Vertexes[vertexName];
-            foreach (string path in vertex.AbsolutePaths)
+            if (vertex.AbsolutePaths != null)
             {
-                if (path.Contains(this.RootDirectory.FullName, StringComparison.OrdinalIgnoreCase))
+                foreach (string path in vertex.AbsolutePaths)
                 {
-                    score = BoostScoreBasedOnDate(score, vertex.LastFinds.Last());
-                    score = AdjustScoreForFrequency(score, vertex.LastFinds.Count);
-                    DirectoryInfo directory = new DirectoryInfo(path);
-                    QueueUpVertex(score, vertex, directory, directory.Parent.FullName.GetHashCode());
+                    // Simple case: the path is a subdirectory of the root
+                    if (path.Contains(this.RootDirectory.FullName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        score = QueueUpVertex(score, vertex, path);
+                    }
+                    // Complex case: the path isn't a subdirectory of the root
+                    else
+                    {
+                        string[] pathParts = path.Split('\\');
+                        
+                        for (int i = 1; i < pathParts.Length; i++)
+                        {
+                            StringBuilder testPath = new StringBuilder();
+                            testPath.Append(RootDirectory.FullName);
+                            for (int j = i; j < pathParts.Length; j++)
+                            {
+                                testPath.Append('\\');
+                                testPath.Append(pathParts[j]);
+                            }
+
+                            string proposedPath = testPath.ToString();
+                            if (Directory.Exists(proposedPath))
+                            {
+                                score = QueueUpVertex(score, vertex, proposedPath);
+                                break;
+                            }
+                        }
+                    }
                 }
             }
+        }
+
+        /// <summary>
+        /// Used by indexing path
+        /// </summary>
+        /// <param name="score"></param>
+        /// <param name="vertex"></param>
+        /// <param name="path"></param>
+        /// <returns></returns>
+        private double QueueUpVertex(double score, Vertex vertex, string path)
+        {
+            if (vertex.LastFinds != null)
+            {
+                score = BoostScoreBasedOnDate(score, vertex.LastFinds.Last());
+                score = AdjustScoreForFrequency(score, vertex.LastFinds.Count);
+            }
+            DirectoryInfo directory = new DirectoryInfo(path);
+            QueueUpVertex(score, vertex, directory, directory.Parent.FullName.GetHashCode());
+            return score;
         }
 
         private void QueueUpVertex(double score, Vertex vertex, DirectoryInfo directory, int parent)
@@ -321,9 +405,9 @@ namespace CeeFind.BetterQueue
             }
 
             // negative matches are logical AND: !*.js AND !*.exe
-            for (int i = 0; i < this.negativeFileNameFilterRegex.Length; i++)
+            for (int i = 0; i < this.NegativeFileNameFilterRegex.Length; i++)
             {
-                if (this.negativeFileNameFilterRegex[i].IsMatch(name))
+                if (this.NegativeFileNameFilterRegex[i].IsMatch(name))
                 {
                     return false;
                 }
