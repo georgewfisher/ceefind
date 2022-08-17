@@ -10,11 +10,13 @@ using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using CeeFind.Utils;
 using System.Diagnostics;
+using System.Text;
 
 namespace CeeFind
 {
     internal class Program
     {
+        private const char DIRECTORY_SEPARATOR = '\\';
         private static HashSet<string> flags;
 
         private static Stuff stuff;
@@ -38,8 +40,7 @@ namespace CeeFind
                         // set minimum level to log
                         .SetMinimumLevel(LogLevel.Debug));
             log = loggerFactory.CreateLogger<Program>();
-
-            rootDirectory = new DirectoryInfo(Directory.GetCurrentDirectory());
+            string rootDirectoryString = Directory.GetCurrentDirectory();
             binaryFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             string binaryPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
             foreach (string extension in File.ReadAllLines(Path.Combine(binaryPath, "binary_files.txt")))
@@ -91,13 +92,25 @@ namespace CeeFind
                 }
                 else if (filenamePart)
                 {
+                    string filter;
+                    if (DiscoverRootPath(arg, out string replacementRoot, out string filterWithoutRoot))
+                    {
+                        filter = filterWithoutRoot;
+                        rootDirectoryString = replacementRoot;
+                        log.LogInformation($"Search path updated to {replacementRoot}");
+                    }
+                    else
+                    {
+                        filter = arg;
+                    }
+
                     if (isNegated)
                     {
-                        negativeFilenameFilterRegex.Add(CleanFilenameFilter(arg));
+                        negativeFilenameFilterRegex.Add(CleanFilenameFilter(filter));
                     }
                     else if (arg != "*")
                     {
-                        filenameFilterRegex.Add(CleanFilenameFilter(arg));
+                        filenameFilterRegex.Add(CleanFilenameFilter(filter));
                     }
 
                     if (!containsDivider)
@@ -109,7 +122,7 @@ namespace CeeFind
                 {
                     if (Regex.IsMatch(arg, $"(?<!\\.)\\*\\."))
                     {
-                        log.LogWarning(@$"Replacing ""*."" in file search string ""{arg}"" with regular expression ""\\..*"" to make searches easier to write.");
+                        log.LogWarning(@$"Using ""*."" in file search string ""{arg}"" with regular expression ""\\..*"" to make searches easier to write.");
                         arg = Regex.Replace(arg, "(?<!\\.)\\*\\.", "\\..*");
                     }
 
@@ -117,6 +130,8 @@ namespace CeeFind
                     searchInFiles = true;
                 }
             }
+
+            rootDirectory = new DirectoryInfo(rootDirectoryString);
 
             if (filenameFilterRegex.All(f => f == "^.*$") && !negativeFilenameFilterRegex.Any())
             {
@@ -187,6 +202,38 @@ namespace CeeFind
             Finish(true, stateFile, metrics);
         }
 
+        /// <summary>
+        /// Allows for a root path to be provided as part of a path filter, allowing for things like C:\myfiles\*.txt
+        /// </summary>
+        /// <param name="filter"></param>
+        /// <param name="rootDirectoryString"></param>
+        /// <param name="replacementFilter"></param>
+        /// <returns></returns>
+        private static bool DiscoverRootPath(string filter, out string rootDirectoryString, out string replacementFilter)
+        {
+            rootDirectoryString = string.Empty;
+            replacementFilter = string.Empty;
+            if (filter.Contains(DIRECTORY_SEPARATOR)) {
+                // Attempt to extract directories from prefix.
+                // Slash could have other meanings so assume user knows what they are doing
+                StringBuilder rootPath = new StringBuilder();
+                for (int i = 0; i < filter.Length; i++)
+                {
+                    rootPath.Append(filter[i]);
+                    if (filter[i] == DIRECTORY_SEPARATOR)
+                    {
+                        string currentRoot = rootPath.ToString();
+                        if (Directory.Exists(currentRoot))
+                        {
+                            rootDirectoryString = currentRoot;
+                        }
+                    }
+                }
+            }
+            replacementFilter = filter.Substring(rootDirectoryString.Length, filter.Length - rootDirectoryString.Length);
+            return rootDirectoryString.Length > 0;
+        }
+
         private static void ShowHistory()
         {
             if (!stuff.SearchHistory.ContainsKey(rootDirectory.FullName))
@@ -195,9 +242,10 @@ namespace CeeFind
             }
             else
             {
-                foreach (Metrics m in stuff.SearchHistory[rootDirectory.FullName])
+                IEnumerable<string> searchHistory = stuff.SearchHistory[rootDirectory.FullName].OrderByDescending(x => x.SearchDate).Select(x => $"{x.Args} ({(int)DateTime.UtcNow.Subtract(x.SearchDate).TotalDays} days ago)").Distinct();
+                foreach (String search in searchHistory)
                 {
-                    Console.WriteLine(m.Args);
+                    Console.WriteLine(search);
                 }
             }
         }
@@ -217,7 +265,7 @@ namespace CeeFind
             if (Regex.IsMatch(filter, "(?<!\\.)\\*"))
             {
                 filter = Regex.Replace(filter, "(?<!\\.)\\*", ".*");
-                log.LogWarning(@$"Replacing ""*"" in filename search string ""{arg}"" with regular expression ""{filter}"" to make searches easier to write.");
+                log.LogWarning(@$"Updating ""*"" in filename search string ""{arg}"" with regular expression ""{filter}"" to make searches easier to write.");
             }
 
             return filter;
