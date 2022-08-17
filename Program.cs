@@ -11,21 +11,21 @@ using Microsoft.Extensions.Logging;
 using CeeFind.Utils;
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json.Serialization;
+using CeeFind.Files;
+using System.IO.Compression;
+using System.Threading.Tasks;
 
 namespace CeeFind
 {
     internal class Program
     {
         private const char DIRECTORY_SEPARATOR = '\\';
-        private static HashSet<string> flags;
-
         private static Stuff stuff;
         private static CeeFindQueue queue;
-
         private static HashSet<string> binaryFiles;
-        private static DirectoryInfo rootDirectory;
-
         private static ILogger<Program> log;
+        private const long LARGE_FILE_SIZE = 1024 * 1024;
 
         public Program()
         {
@@ -33,12 +33,26 @@ namespace CeeFind
 
         private static void Main(string[] args)
         {
+            string codebase = Assembly.GetExecutingAssembly().GetName().CodeBase;
+            string stateFile = Path.Combine(Path.GetDirectoryName(codebase), "state_v2.json.gz");
+            stateFile = stateFile.Replace("file:\\", string.Empty);
+            Task<Stuff> task;
+            if (File.Exists(stateFile))
+            {
+                task = LoadHistory(stateFile);
+            }
+            else
+            {
+                task = new Task<Stuff>(
+                    () =>
+                        new Stuff());
+                task.Start();
+            }
+
             ILoggerFactory loggerFactory = LoggerFactory.Create(
-            builder => builder
-                        // add console as logging target
-                        .AddConsole()
-                        // set minimum level to log
-                        .SetMinimumLevel(LogLevel.Debug));
+                builder => builder
+                            .AddConsole()
+                            .SetMinimumLevel(LogLevel.Information));
             log = loggerFactory.CreateLogger<Program>();
             string rootDirectoryString = Directory.GetCurrentDirectory();
             binaryFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -49,46 +63,73 @@ namespace CeeFind
             }
             List<string> filenameFilterRegex = new List<string>();
             List<string> negativeFilenameFilterRegex = new List<string>();
-            bool searchInFiles = false;
             List<string> inFileSearchStrings = new List<string>();
-            Program.flags = new HashSet<string>();
             List<Regex> search = new List<Regex>();
-            string codebase = Assembly.GetExecutingAssembly().GetName().CodeBase;
-            string stateFile = Path.Combine(Path.GetDirectoryName(codebase), "state_v2.json");
-            stateFile = stateFile.Replace("file:\\", string.Empty);
-
-            if (File.Exists(stateFile))
-            {
-                stuff = (Stuff)JsonSerializer.Deserialize(File.ReadAllText(stateFile), typeof(Stuff));
-            }
-            else
-            {
-                stuff = new Stuff();
-            }
+            SearchSettings settings = new SearchSettings();
 
             string[] strArrays = args;
             bool containsDivider = args.Any(a => a == "--");
             bool filenamePart = true;
             bool isNegated = false;
+            List<string> warnings = new List<string>();
             for (int i = 0; i < (int)strArrays.Length; i++)
             {
                 string arg = strArrays[i];
-                if (arg == "history" && args.Length == 1)
-                {
-                    ShowHistory();
-                    return;
-                }
                 if (arg == "--")
                 {
                     filenamePart = false;
                 }
-                else if (arg == "not")
-                {
-                    isNegated = true;
-                }
                 else if (arg.StartsWith("-"))
                 {
-                    Program.flags.Add(arg.Substring(1).ToLower());
+                    string argValue = arg.Substring(1).ToLower();
+                    switch (argValue)
+                    {
+                        case "silent":
+                        case "s":
+                            settings.IsSilent = true;
+                            break;
+                        case "binary":
+                        case "b":
+                            settings.IncludeBinary = true;
+                            break;
+                        case "verbose":
+                        case "v":
+                            settings.IsVerbose = true;
+                            break;
+                        case "history":
+                        case "h":
+                            settings.ShowHistory = true;
+                            break;
+                        case "dirs":
+                        case "dir":
+                        case "d":
+                            settings.OutputDirectoriesOnly = true;
+                            break;
+                        case "files":
+                        case "file":
+                            settings.SearchFilesOnly = true;
+                            break;
+                        case "up":
+                        case "u":
+                            settings.Up = true;
+                            break;
+                        case "first":
+                        case "f":
+                            settings.First = true;
+                            break;
+                        case "json":
+                        case "j":
+                            settings.WriteStateAsJson = true;
+                            break;
+                        case "regex":
+                        case "r":
+                            settings.NoRegexAssist = true;
+                            break;
+                    }
+                }
+                else if (filenamePart && arg == "not")
+                {
+                    isNegated = true;
                 }
                 else if (filenamePart)
                 {
@@ -106,11 +147,11 @@ namespace CeeFind
 
                     if (isNegated)
                     {
-                        negativeFilenameFilterRegex.Add(CleanFilenameFilter(filter));
+                        negativeFilenameFilterRegex.Add(CleanFilenameFilter(filter, warnings, settings));
                     }
                     else if (arg != "*")
                     {
-                        filenameFilterRegex.Add(CleanFilenameFilter(filter));
+                        filenameFilterRegex.Add(CleanFilenameFilter(filter, warnings, settings));
                     }
 
                     if (!containsDivider)
@@ -122,84 +163,103 @@ namespace CeeFind
                 {
                     if (Regex.IsMatch(arg, $"(?<!\\.)\\*\\."))
                     {
-                        log.LogWarning(@$"Using ""*."" in file search string ""{arg}"" with regular expression ""\\..*"" to make searches easier to write.");
+                        warnings.Add(@$"Using ""*."" in file search string ""{arg}"" with regular expression ""\\..*"" to make searches easier to write.");
                         arg = Regex.Replace(arg, "(?<!\\.)\\*\\.", "\\..*");
                     }
 
                     inFileSearchStrings.Add(arg);
-                    searchInFiles = true;
+                    settings.SearchInFiles = true;
                 }
             }
 
-            rootDirectory = new DirectoryInfo(rootDirectoryString);
+            DirectoryInfo rootDirectory = new DirectoryInfo(rootDirectoryString);
+
+            if (settings.ShowHistory)
+            {
+                ShowHistory(rootDirectory);
+            }
 
             if (filenameFilterRegex.All(f => f == "^.*$") && !negativeFilenameFilterRegex.Any())
             {
-                flags.Add("all");
+                settings.ScanAllFiles = true;
             }
 
-            queue = new CeeFindQueue(stuff, rootDirectory, filenameFilterRegex, negativeFilenameFilterRegex, inFileSearchStrings);
-            queue.Initialize();
-
-            bool isVerbose = Program.flags.Contains("v") || Program.flags.Contains("verbose");
-            bool includeBinary = Program.flags.Contains("b") || Program.flags.Contains("binary");
-
-            List<SearchResult> results = new List<SearchResult>();
-            if (isVerbose)
-            {
-                string searchDescription = String.Join(", ", search.Select(s => s.ToString()));
-                Console.WriteLine($"Searching for {searchDescription}...");
-                Console.WriteLine($"Including binary files: " + includeBinary);
-            }
-            SearchContext context = new SearchContext(isVerbose, includeBinary);
-            Metrics metrics = new Metrics(searchInFiles, string.Join(' ', args));
+            Metrics metrics = new Metrics(settings, string.Join(' ', args));
 
             Console.CancelKeyPress += delegate
             {
-                if (context.IsVerbose)
+                if (settings.IsVerbose)
                 {
                     Console.WriteLine("Terminated early");
                 }
-                Finish(false, stateFile, metrics);
+                Finish(rootDirectory, true, false, false, stateFile, metrics);
                 Environment.Exit(0);
             };
 
-            if (!Program.flags.Contains("up"))
+            // Setup complete, proceed with search
+            stuff = task.Result;
+            queue = new CeeFindQueue(stuff, rootDirectory, filenameFilterRegex, negativeFilenameFilterRegex, inFileSearchStrings);
+            queue.Initialize();
+
+            if (settings.IsVerbose)
             {
-                Program.Search(searchInFiles, results, context, metrics);
+                log.LogInformation($"Searching for {queue}...");
+                log.LogInformation("Settings: " + Environment.NewLine + settings.ToString());
+
+                foreach (string warning in warnings)
+                {
+                    log.LogWarning(warning);
+                }
+            }
+
+            if (!settings.Up)
+            {
+                Search(rootDirectory, metrics);
             }
             else
             {
+                List<SearchResult> results = new List<SearchResult>();
                 while (true)
                 {
                     if ((results.Count != 0 ? true : rootDirectory == null))
                     {
                         break;
                     }
-                    Program.Search(searchInFiles, results, context, metrics);
+                    results = Search(rootDirectory, metrics);
                     rootDirectory = rootDirectory.Parent;
                     queue = new CeeFindQueue(stuff, rootDirectory, filenameFilterRegex, negativeFilenameFilterRegex, inFileSearchStrings);
                     queue.Initialize();
                 }
             }
-            if (context.IsVerbose)
+            if (settings.IsVerbose)
             {
-                if (searchInFiles)
+                if (settings.SearchInFiles)
                 {
                     TopExtensionsReport(metrics);
-                    Console.WriteLine($"Found {metrics.FileCount} files over {metrics.DirectoryCount} directories, of which {metrics.FileMatchCount} were opened, which resulted in {metrics.FileMatchInsideCount} file matches and {metrics.MatchRowCount} lines matched. Scan time {metrics.Duration.TotalSeconds}s.");
+                    Console.WriteLine($"Found {metrics.FileCount} files over {metrics.DirectoryCount} directories, of which {metrics.FileMatchCount} were opened, which resulted in {metrics.FileMatchInsideCount} file matches and {metrics.MatchRowCount} lines matched. Scan time {metrics.Duration.TotalSeconds}s. Efficiency {metrics.OverallEfficiency}%.");
                 }
                 else
                 {
-                    Console.WriteLine($"Found {metrics.FileCount} files over {metrics.DirectoryCount} directories, of which {metrics.FileMatchCount} were matches. Scan time {metrics.Duration.TotalSeconds}s.");
+                    Console.WriteLine($"Found {metrics.FileCount} files over {metrics.DirectoryCount} directories, of which {metrics.FileMatchCount} were matches. Scan time {metrics.Duration.TotalSeconds}s. Efficiency {metrics.OverallEfficiency}%.");
                 }
             }
-            if (Program.flags.Contains("replace"))
-            {
-                Program.Replace(results, inFileSearchStrings, context, metrics);
-            }
 
-            Finish(true, stateFile, metrics);
+            Finish(rootDirectory, false, !queue.IsMore(), true, stateFile, metrics);
+        }
+
+        private static async Task<Stuff> LoadHistory(string stateFile)
+        {
+            Stuff stuff;
+            using (FileStream stream = File.Open(stateFile, FileMode.Open))
+            {
+                using (GZipStream compressedStream = new GZipStream(stream, CompressionMode.Decompress))
+                {
+                    ValueTask<Stuff> task = JsonSerializer.DeserializeAsync<Stuff>(compressedStream);
+                    await task;
+                    stuff = task.Result;
+                }
+            }
+            return stuff;
         }
 
         /// <summary>
@@ -234,7 +294,7 @@ namespace CeeFind
             return rootDirectoryString.Length > 0;
         }
 
-        private static void ShowHistory()
+        private static void ShowHistory(DirectoryInfo rootDirectory)
         {
             if (!stuff.SearchHistory.ContainsKey(rootDirectory.FullName))
             {
@@ -250,44 +310,68 @@ namespace CeeFind
             }
         }
 
-        private static string CleanFilenameFilter(string arg)
+        private static string CleanFilenameFilter(string arg, List<string> warnings, SearchSettings settings)
         {
             string filter = arg;
-            if (!filter.StartsWith("^"))
-            {
-                filter = string.Concat("^", filter);
-            }
-            if (!filter.EndsWith("$"))
-            {
-                filter = string.Concat(filter, "$");
-            }
 
-            if (Regex.IsMatch(filter, "(?<!\\.)\\*"))
+            if (!settings.NoRegexAssist)
             {
-                filter = Regex.Replace(filter, "(?<!\\.)\\*", ".*");
-                log.LogWarning(@$"Updating ""*"" in filename search string ""{arg}"" with regular expression ""{filter}"" to make searches easier to write.");
+                if (!filter.StartsWith("^"))
+                {
+                    filter = string.Concat("^", filter);
+                }
+                if (!filter.EndsWith("$"))
+                {
+                    filter = string.Concat(filter, "$");
+                }
+
+                if (Regex.IsMatch(filter, "(?<!\\.)\\*"))
+                {
+                    filter = Regex.Replace(filter, "(?<!\\.)\\*", ".*");
+                    warnings.Add(@$"Updating ""*"" in filename search string ""{arg}"" with regular expression ""{filter}"" to make searches easier to write.");
+                }
             }
 
             return filter;
         }
 
-        private static void Finish(bool isComplete, string stateFile, Metrics metrics)
+        private static void Finish(DirectoryInfo rootDirectory, bool isEarlyTerminated, bool isCompleteScan, bool isFinished, string stateFile, Metrics metrics)
         {
             stuff.Clean();
-            metrics.IsComplete = isComplete;
+            metrics.IsComplete = isCompleteScan;
             metrics.Clean();
+
+            // Store the search results for the root directory
             if (!stuff.SearchHistory.ContainsKey(rootDirectory.FullName))
             {
                 stuff.SearchHistory.Add(rootDirectory.FullName, new List<Metrics>());
             }
             stuff.SearchHistory[rootDirectory.FullName].Add(metrics);
 
+            if (metrics.Settings.WriteStateAsJson)
+            {
+                File.WriteAllText("state.json", JsonSerializer.Serialize(stuff, new JsonSerializerOptions
+                {
+                    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault | JsonIgnoreCondition.WhenWritingNull
+                }));
+            }
+
             if (metrics.IsFileNameSearchWithHumanReadableResults || metrics.IsFileSearchWithHumanReadableResults)
             {
                 // either complete, or early termination
-                if (isComplete || (!isComplete && DateTime.UtcNow.Subtract(metrics.SearchDate).TotalSeconds > 5))
+                if (isFinished || (isEarlyTerminated && DateTime.UtcNow.Subtract(metrics.SearchDate).TotalSeconds > 5))
                 {
-                    File.WriteAllText(stateFile, JsonSerializer.Serialize(stuff));
+                    using (FileStream stream = File.Open(stateFile, FileMode.Create))
+                    {
+                        using (GZipStream compressedStream = new GZipStream(stream, CompressionMode.Compress))
+                        {
+                            Task task = JsonSerializer.SerializeAsync(compressedStream, stuff, new JsonSerializerOptions
+                            {
+                                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault | JsonIgnoreCondition.WhenWritingNull
+                            });
+                            task.Wait();
+                        }
+                    }
                 }
             }
         }
@@ -319,7 +403,7 @@ namespace CeeFind
             }
         }
 
-        private static void Replace(List<SearchResult> results, List<string> inFileSearchString, SearchContext context, Metrics metrics)
+        private static void Replace(DirectoryInfo rootDirectory, List<SearchResult> results, List<string> inFileSearchString, SearchSettings context, Metrics metrics)
         {
             if (results.Count != 0)
             {
@@ -338,7 +422,7 @@ namespace CeeFind
                 {
                     bool showDirName = true;
                     QueuedDirectory startPath = QueuedDirectory.InitializeRoot(rootDirectory, stuff);
-                    Program.SearchFile(startPath, new List<Regex>(), replaceString, replaceResults, result, ref showDirName, context, metrics);
+                    Program.SearchFile(rootDirectory, startPath, new List<Regex>(), replaceString, replaceResults, result, ref showDirName, metrics);
                 }
                 if (replaceResults.Count <= 0)
                 {
@@ -385,13 +469,15 @@ namespace CeeFind
             }
         }
 
-        private static Metrics Search(bool searchInFiles, List<SearchResult> allResults, SearchContext context, Metrics metrics)
+        private static List<SearchResult> Search(DirectoryInfo rootDirectory, Metrics metrics)
         {
-            bool isTopExtensionsReportShown = !context.IsVerbose;
+            List<SearchResult> results = new List<SearchResult>();
+            bool isTopExtensionsReportShown = !metrics.Settings.IsVerbose;
             List<Vertex> verticesWhereObjFound = new List<Vertex>();
             FileInfo[] files;
             FileInfo file;
             Stopwatch sw = new Stopwatch();
+            long lastItemFound = -1;
             sw.Start();
             long backOffLoggingDuration = TimeSpan.FromSeconds(5).Ticks;
             while (true)
@@ -420,7 +506,7 @@ namespace CeeFind
                 }
                 catch (UnauthorizedAccessException)
                 {
-                    if (context.IsVerbose)
+                    if (metrics.Settings.IsVerbose)
                     {
                         string relativePath = DirectoryUtils.GetRelativePath(rootDirectory, directory.Directory.FullName);
                         Console.ForegroundColor = ConsoleColor.Red;
@@ -431,7 +517,7 @@ namespace CeeFind
                 }
                 catch (IOException e)
                 {
-                    if (context.IsVerbose)
+                    if (metrics.Settings.IsVerbose)
                     {
                         Console.ForegroundColor = ConsoleColor.Red;
                         string relativePath = DirectoryUtils.GetRelativePath(rootDirectory, directory.Directory.FullName);
@@ -447,30 +533,28 @@ namespace CeeFind
 
                 FileInfo[] fileInfoArray = files;
                 int resultsInDirectory = 0;
+                int resultsInFiles = 0;
                 for (int i = 0; i < (int)fileInfoArray.Length; i++)
                 {
                     metrics.FileCount++;
-                    if (context.IsVerbose && sw.ElapsedTicks > backOffLoggingDuration)
+                    if (metrics.Settings.IsVerbose && sw.ElapsedTicks > backOffLoggingDuration)
                     {
-                        Console.WriteLine(ProgressReport(metrics, sw));
+                        Console.WriteLine(ProgressReport(metrics, rootDirectory, sw));
                         backOffLoggingDuration *= 2;
                     }
                     file = fileInfoArray[i];
 
                     if (queue.IsFilenameMatch(file.Name))
-                    { 
+                    {
                         metrics.FileMatchCount++;
                         resultsInDirectory++;
 
-                        // Remember directories where something was found (for index)
-                        string fullname = directory.Directory.FullName;
-                        if (!directory.Vertex.AbsolutePaths.Contains(fullname))
+                        if (!metrics.Settings.SearchInFiles)
                         {
-                            directory.Vertex.AbsolutePaths.Add(fullname);
-                        }
-
-                        if (!searchInFiles)
-                        {
+                            if (directory.Vertex.LastFinds == null)
+                            {
+                                directory.Vertex.LastFinds = new List<DateTime>();
+                            }
                             directory.Vertex.LastFinds.Add(DateTime.UtcNow);
                             if (queue.FileNameFilters.Length != 0)
                             {
@@ -484,7 +568,7 @@ namespace CeeFind
                                     directory.Vertex);
                             }
 
-                            if (!Program.flags.Contains("dirs"))
+                            if (!metrics.Settings.OutputDirectoriesOnly)
                             {
                                 Console.WriteLine(file.FullName);
                             }
@@ -492,58 +576,92 @@ namespace CeeFind
                             {
                                 Console.WriteLine(file.Directory.FullName);
                             }
-                            if (flags.Contains("first"))
+                            if (metrics.Settings.First)
                             {
-                                Environment.Exit(0);
+                                EndSearchStatistics(metrics, sw, lastItemFound);
+                                return results;
                             }
                         }
                         else
                         {
-                            if (SearchFile(directory, queue.InsideFileFilterRegex, string.Empty, allResults, file, ref shownDirName, context, metrics))
+                            if (SearchFile(rootDirectory, directory, queue.InsideFileFilterRegex, string.Empty, results, file, ref shownDirName, metrics))
                             {
                                 verticesWhereObjFound.Add(directory.Vertex);
+                                resultsInFiles++;
                                 metrics.FileMatchInsideCount++;
+
+                                if (metrics.Settings.First)
+                                {
+                                    EndSearchStatistics(metrics, sw, lastItemFound);
+                                    return results;
+                                }
                             }
                         }
                     }
                 }
 
-                if (resultsInDirectory > 0)
+                int resultCount = metrics.Settings.SearchInFiles ? resultsInFiles : resultsInDirectory;
+                if (resultCount > 0)
                 {
-                    directory.Vertex.LastFindCount.Add(resultsInDirectory);
+                    lastItemFound = sw.ElapsedTicks;
+                    queue.AddAdjacents(directory.Directory, directory.Vertex, directory.Parent.GetHashCode());
+
+                    // Remember when something was found
+                    if (directory.Vertex.LastFindCount == null)
+                    {
+                        directory.Vertex.LastFindCount = new Histogram();
+                    }
+                    directory.Vertex.LastFindCount.Add(resultCount);
+                    
+                    // Remember directories where something was found (for index)
+                    string fullname = directory.Directory.FullName;
+                    if (directory.Vertex.AbsolutePaths == null)
+                    {
+                        directory.Vertex.AbsolutePaths = new HashSet<string>();
+                    }
+                    if (!directory.Vertex.AbsolutePaths.Contains(fullname))
+                    {
+                        directory.Vertex.AbsolutePaths.Add(fullname);
+                    }
                 }
 
                 queue.EnqueueSubfolder(directory.Directory, directory.Directory.GetDirectories());
 
                 // this part finds directories
-                if ((searchInFiles ? false : !Program.flags.Contains("files")))
+                if (metrics.Settings.SearchInFiles ? false : !metrics.Settings.SearchFilesOnly)
                 {
                     if (queue.IsFilenameMatch(directory.Directory.Name))
                     {
                         Console.WriteLine(directory.Directory.FullName);
-                        if (Program.flags.Contains("first"))
+                        if (metrics.Settings.First)
                         {
-                            Environment.Exit(0);
+                            EndSearchStatistics(metrics, sw, lastItemFound);
+                            return results;
                         }
                     }
                 }
             }
-            sw.Stop();
-            metrics.Duration = sw.Elapsed;
-
-            return metrics;
+            EndSearchStatistics(metrics, sw, lastItemFound);
+            return results;
         }
 
-        private static string ProgressReport(Metrics metrics, Stopwatch sw)
+        private static void EndSearchStatistics(Metrics metrics, Stopwatch sw, long lastItemFound)
+        {
+            sw.Stop();
+            metrics.Duration = sw.Elapsed;
+            metrics.OverallEfficiency = lastItemFound == -1 ? 0 : 100 - Math.Round(((double)lastItemFound / sw.ElapsedTicks) * 100.0, 2);
+        }
+
+        private static string ProgressReport(Metrics metrics, DirectoryInfo rootDirectory, Stopwatch sw)
         {
             string mode = "Inspected";
             if (stuff.SearchHistory.ContainsKey(rootDirectory.FullName))
             {
                 List<Metrics> metricsFromDir = stuff.SearchHistory[rootDirectory.FullName].Where(m => m.IsComplete).ToList();
 
-                if (!metrics.SearchInFiles)
+                if (!metrics.Settings.SearchInFiles)
                 {
-                    List<Metrics> relevantMetrics = metricsFromDir.Where(m => !m.SearchInFiles).ToList();
+                    List<Metrics> relevantMetrics = metricsFromDir.Where(m => !m.Settings.SearchInFiles).ToList();
                     if (relevantMetrics.Any())
                     {
                         return GenerateEtaReport(mode, metrics, sw, relevantMetrics, false);
@@ -563,7 +681,7 @@ namespace CeeFind
                 {
                     mode = "Shallow Scanned";
                     // search in files, scan few files
-                    List<Metrics> relevantMetrics = metricsFromDir.Where(m => m.SearchInFiles && !metrics.IsProbableDeepScan).ToList();
+                    List<Metrics> relevantMetrics = metricsFromDir.Where(m => m.Settings.SearchInFiles && !metrics.IsProbableDeepScan).ToList();
                     if (relevantMetrics.Any())
                     {
                         return GenerateEtaReport(mode, metrics, sw, relevantMetrics, false);
@@ -641,11 +759,13 @@ namespace CeeFind
             return ((int)Math.Ceiling(seconds / 60)).ToString() + "m";
         }
 
-        private static bool SearchFile(QueuedDirectory currentPath, List<Regex> search, string searchStr, List<SearchResult> allResults, FileInfo file, ref bool showDirName, SearchContext context, Metrics metrics)
+        private static bool SearchFile(
+            DirectoryInfo rootDirectory, 
+            QueuedDirectory currentPath, List<Regex> search, string searchStr, List<SearchResult> allResults, FileInfo file, ref bool showDirName, Metrics metrics)
         {
-            if (!context.IncludeBinary)
+            if (!metrics.Settings.IncludeBinary)
             {
-                if (file.Length > 1000000 ||
+                if (file.Length > LARGE_FILE_SIZE ||
                     (file.Extension.Length > 1
                     && Program.binaryFiles.Contains(file.Extension.Substring(1))))
                 {
@@ -721,7 +841,7 @@ namespace CeeFind
             }
             catch (Exception e)
             {
-                if (context.IsVerbose)
+                if (metrics.Settings.IsVerbose)
                 {
                     Console.WriteLine($"Skipping {file.FullName}: {e.Message}");
                 }
@@ -730,17 +850,30 @@ namespace CeeFind
 
             if (((IEnumerable<bool>)allFound).All<bool>((bool a) => a))
             {
+                if (currentPath.Vertex.LastFinds == null)
+                {
+                    currentPath.Vertex.LastFinds = new List<DateTime>();
+                }
+
                 currentPath.Vertex.LastFinds.Add(DateTime.UtcNow);
 
-                if (Program.flags.Contains("files"))
+                if (metrics.Settings.SearchFilesOnly)
                 {
                     Console.WriteLine(file.FullName);
-                    if (Program.flags.Contains("first"))
+                    if (metrics.Settings.First)
                     {
-                        Environment.Exit(0);
+                        return true;
                     }
                 }
-                else if (!Program.flags.Contains("dirs"))
+                else if (metrics.Settings.OutputDirectoriesOnly)
+                {
+                    Console.WriteLine(file.Directory.FullName);
+                    if (metrics.Settings.First)
+                    {
+                        return true;
+                    }
+                }
+                else
                 {
                     foreach (SearchResult matchInfo in matchList)
                     {
@@ -796,14 +929,6 @@ namespace CeeFind
                         lineCount++;
                     }
 
-                }
-                else
-                {
-                    Console.WriteLine(file.Directory.FullName);
-                    if (Program.flags.Contains("first"))
-                    {
-                        Environment.Exit(0);
-                    }
                 }
                 return true;
             }

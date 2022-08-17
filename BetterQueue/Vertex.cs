@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.IO;
 using System.Linq;
+using System.Text.Json.Serialization;
 
 namespace CeeFind.BetterQueue
 {
@@ -15,9 +17,12 @@ namespace CeeFind.BetterQueue
 
         public List<DateTime> LastFinds { get; set; }
 
-        public List<long> LastFindCount { get; set; }
+        public Histogram LastFindCount { get; set; }
 
         public Dictionary<string, Edge> Adjacents { get; set; }
+
+        [JsonIgnore]
+        public int AdjacentsHitCount { get; private set; }
 
         public Vertex()
         {
@@ -25,33 +30,49 @@ namespace CeeFind.BetterQueue
 
         internal double Rank()
         {
+            if (LastFinds == null || LastFindCount == null)
+            {
+                return Visits;
+            }
             return LastFindCount.Count * (1 / DateTime.UtcNow.Subtract(LastFinds.Last()).Days) * Visits;
         }
 
-        public Vertex(string name, DirectoryInfo path)
+        public Vertex(string name)
         {
             Name = name;
-            this.AbsolutePaths = new HashSet<string>() { };
+            this.AbsolutePaths = null;
             Visits = 1;
-            LastFinds = new List<DateTime>();
-            LastFindCount = new List<long>();
-            Adjacents = new Dictionary<string, Edge>();
+            LastFinds = null;
+            LastFindCount = null;
+            Adjacents = null;
         }
 
 
-        internal static void UpdateAdjacents(int i, Vertex v, Vertex v2)
+        internal static void UpdateAdjacents(int distance, Vertex v, Vertex v2)
         {
+            if (v2.Adjacents == null)
+            {
+                v2.Adjacents = new Dictionary<string, Edge>();
+            }
+
+            v2.AdjacentsHitCount++;
+
             if (v2.Adjacents.ContainsKey(v.Name))
             {
-                if (!v2.Adjacents[v.Name].RelativePosition.Contains(i))
+                if (!v2.Adjacents[v.Name].RelativePosition.Contains(distance))
                 {
-                    v2.Adjacents[v.Name].RelativePosition.Add(i);
+                    v2.Adjacents[v.Name].RelativePosition.Add(distance);
                 }
             }
             else
             {
-                v2.Adjacents.Add(v.Name, new Edge(i, v.Name));
+                v2.Adjacents.Add(v.Name, new Edge(distance, v.Name));
             }
+        }
+
+        public override string ToString()
+        {
+            return this.Name;
         }
     }
 }

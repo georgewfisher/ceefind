@@ -10,6 +10,7 @@ namespace CeeFind.BetterQueue
             this.Directory = directory;
             this.Vertex = vertex;
             this.Score = score;
+            this.Parent = parent;
         }
 
         public QueuedDirectory(DirectoryInfo directory, int parent, Vertex vertex, double score) :
@@ -26,7 +27,7 @@ namespace CeeFind.BetterQueue
             }
             else
             {
-                v = new Vertex(rootDirectory.Name, rootDirectory);
+                v = new Vertex(rootDirectory.Name);
                 stuff.Vertexes.Add(v.Name, v);
             }
             QueuedDirectory qd = new QueuedDirectory(rootDirectory, 0, v, 0);
@@ -35,10 +36,16 @@ namespace CeeFind.BetterQueue
         }
 
         public double Score { get; set; }
+        public int Parent { get; }
         public int Id { get; }
         public DirectoryInfo Directory { get; set; }
         public Vertex Vertex { get; set; }
         public bool IsVisited { get; set; }
         public bool IsRoot { get; set; }
+
+        public override string ToString()
+        {
+            return this.Directory.Name;
+        }
     }
 }

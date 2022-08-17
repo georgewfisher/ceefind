@@ -35,5 +35,10 @@ namespace CeeFind.Utils
         {
             return path.Replace(rootDirectory.FullName, string.Empty);
         }
+
+        internal static string GetRelativePath(DirectoryInfo rootDirectory, DirectoryInfo path)
+        {
+            return GetRelativePath(rootDirectory, path.FullName);
+        }
     }
 }

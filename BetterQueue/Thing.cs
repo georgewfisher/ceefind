@@ -6,7 +6,8 @@ using System.Threading.Tasks;
 
 namespace CeeFind.BetterQueue
 {
-    /// <summary>
+    /// <
+    /// >
     /// Equivalent to a file
     /// </summary>
     internal class Thing

@@ -2,13 +2,13 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 
 namespace CeeFind
 {
     internal class Metrics
     {
-        public bool SearchInFiles { get; set; }
         public int FileCount { get; set; }
         public int DirectoryCount { get; set; }
         public int FileMatchCount { get; set; }
@@ -19,26 +19,34 @@ namespace CeeFind
         public Dictionary<string, long> ScanSizeByExtension { get; set; }
         public Dictionary<string, long> ExcludedBinaries { get; set; }
         public DateTime SearchDate { get; set; }
+        public SearchSettings Settings { get; }
         public bool IsComplete { get; set; }
         public string Args { get; set; }
 
         // summative calculated metrics
-        public bool IsFileNameSearchWithHumanReadableResults { get { return !SearchInFiles && FileMatchCount < 1000; } }
-        public bool IsFileSearchWithHumanReadableResults { get { return SearchInFiles && FileMatchInsideCount < 1000; } }
+        [JsonIgnore]
+        public bool IsFileNameSearchWithHumanReadableResults { get { return !Settings.SearchInFiles && FileMatchCount < 1000; } }
+        [JsonIgnore]
+        public bool IsFileSearchWithHumanReadableResults { get { return Settings.SearchInFiles && FileMatchInsideCount < 1000; } }
+        [JsonIgnore]
         private const double PERCENT_READ_REQUIRED_DEEP_SCAN = 0.05; // 5%
+
+        [JsonIgnore]
         public bool IsProbableDeepScan
         {
             get {
-                return SearchInFiles && (double)FileMatchCount / FileCount > PERCENT_READ_REQUIRED_DEEP_SCAN;
+                return Settings.SearchInFiles && (double)FileMatchCount / FileCount > PERCENT_READ_REQUIRED_DEEP_SCAN;
             }
         }
+        [JsonIgnore]
+        public double OverallEfficiency { get; internal set; }
 
-        public Metrics(bool searchInFiles, string args)
+        public Metrics(SearchSettings settings, string args)
         {
             ScanSizeByExtension = new Dictionary<string, long>();
             ExcludedBinaries = new Dictionary<string, long>();
             SearchDate = DateTime.UtcNow;
-            SearchInFiles = searchInFiles;
+            Settings = settings;
             Args = args;
         }
 
