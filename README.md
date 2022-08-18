@@ -35,11 +35,11 @@ Smart:
 
 `f *.java`
 
-`f *Aggregation.cs`
+`f .*Aggregation.cs`
 
 `f [a-z]+[0-9].cs`
 
-*Note:* the file filter is a regular expression, but `*` when not in the form to `.*` is converted to `.*` to allow for filters like `*.cpp`
+*Note:* the file filter is a regular expression, but `*.` when not in the form to `.*.` is converted to `.*` to allow for filters like `*.cpp`. Then, anchors are added at each end to make the regular expression `^.*\.cpp$`. To disable this assistance use the flag `-r` or `-regex`.
 
 #### Find in files:
 

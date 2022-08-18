@@ -39,7 +39,7 @@ namespace CeeFind.BetterQueue
             this.NegativeFileNameFilterRegex = negativeFilenameFilter.Select(f => new Regex(f, RegexOptions.IgnoreCase | RegexOptions.Compiled)).ToArray();
             this.insideFileFilter = fileFilterRegex;
             this.InsideFileFilterRegex = fileFilterRegex.Select(f => new Regex(f, RegexOptions.IgnoreCase | RegexOptions.Compiled)).ToList();
-            this.RootDirectory = new DirectoryInfo(Directory.GetCurrentDirectory());
+            this.RootDirectory = rootDirectory;
             List<string> rootPathList = rootDirectory.FullName.Split('\\').ToList();
             this.Root = rootPathList;
             this.RootHash = rootDirectory.FullName.GetHashCode();

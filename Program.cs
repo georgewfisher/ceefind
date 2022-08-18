@@ -210,12 +210,17 @@ namespace CeeFind
                 List<SearchResult> results = new List<SearchResult>();
                 while (true)
                 {
-                    if ((results.Count != 0 ? true : rootDirectory == null))
+                    results = Search(metrics);
+                    rootDirectory = rootDirectory.Parent;
+
+                    if (rootDirectory == null || results.Count != 0)
                     {
                         break;
                     }
-                    results = Search(metrics);
-                    rootDirectory = rootDirectory.Parent;
+                    if (metrics.Settings.IsVerbose)
+                    {
+                        log.LogInformation($"Moving up to parent folder {rootDirectory}");
+                    }
                     queue = new CeeFindQueue(stuff, rootDirectory, filenameFilterRegex, negativeFilenameFilterRegex, inFileSearchStrings);
                     queue.Initialize();
                 }
@@ -513,7 +518,6 @@ namespace CeeFind
                             if (queue.FileNameFilters.Length != 0)
                             {
                                 verticesWhereObjFound.Add(directory.Vertex);
-
                                 stuff.AddThing(
                                     file.Name,
                                     queue.FileNameFilters,
@@ -530,6 +534,9 @@ namespace CeeFind
                             {
                                 Console.WriteLine(file.Directory.FullName);
                             }
+
+                            results.Add(new SearchResult(new SimpleMatchCollection(), null, file));
+
                             if (metrics.Settings.First)
                             {
                                 EndSearchStatistics(metrics, sw, lastItemFound);
