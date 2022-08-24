@@ -25,15 +25,19 @@ namespace CeeFind
         public bool First { get; set; }
         public bool SearchFilesOnly { get; set; }
         [JsonIgnore]
-        public bool WriteStateAsJson { get; internal set; }
+        public bool WriteStateAsJson { get; set; }
         [JsonIgnore]
-        public bool NoRegexAssist { get; internal set; }
+        public bool NoRegexAssist { get; set; }
+        [JsonIgnore]
+        public bool ShowPreviousResults { get; set; }
+        [JsonIgnore]
+        public bool IgnoreNewLines { get; set; }
 
         public override string ToString()
         {
             StringBuilder sb = new StringBuilder();
 
-            foreach (string property in this.GetType().GetProperties().Select(p => p.Name + " = " + p.GetValue(this)))
+            foreach (string property in this.GetType().GetProperties().Select(p => p.Name + ": " + p.GetValue(this).ToString().ToLower()))
             {
                 sb.Append('\t');
                 sb.AppendLine(property);

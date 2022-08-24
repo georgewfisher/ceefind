@@ -49,6 +49,9 @@ Smart:
 
 `f *.java override sql color`
 
+Find filenames with crlf line endings:
+`f * \r\n -ignorenewlines -files`
+
 Find in file filter is always a regular expression.
 
 #### Find in multiple types of file filters
@@ -92,3 +95,4 @@ This includes:
 |-file<br />-files|Show only filenames, not directories or file lines|
 |-json|Dump the current index out as `state.json`|
 |-r<br />-regex|Use pure regular expressions, no conversion|
+|-n<br />-ignorenewlines|Read entire files, including newlines|
