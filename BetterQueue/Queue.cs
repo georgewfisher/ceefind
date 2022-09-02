@@ -22,30 +22,35 @@ namespace CeeFind.BetterQueue
         private int RootHash { get; }
         private Stuff stuff;
         private Dictionary<long, QueuedDirectory> preQueue;
+        private char separator;
         private PriorityQueue<QueuedDirectory, double> queue;
 
         private readonly long INDEX_LOOKUP_SCORE = 1000000;
         private readonly long BASE_SCORE = 100;
 
         public CeeFindQueue(
+            char separator,
             Stuff stuff,
             DirectoryInfo rootDirectory,
             List<string> fileNameFilter,
             List<string> negativeFilenameFilter,
-            List<string> fileFilterRegex)
+            List<string> fileFilterRegex,
+            SearchSettings searchSettings)
         {
             this.FileNameFilters = fileNameFilter.ToArray();
-            this.FileNameFilterRegex = fileNameFilter.Select(f => new Regex(f, RegexOptions.IgnoreCase | RegexOptions.Compiled)).ToArray();
-            this.NegativeFileNameFilterRegex = negativeFilenameFilter.Select(f => new Regex(f, RegexOptions.IgnoreCase | RegexOptions.Compiled)).ToArray();
+            RegexOptions caseSensitivity = searchSettings.CaseSensitive ? RegexOptions.None : RegexOptions.IgnoreCase;
+            this.FileNameFilterRegex = fileNameFilter.Select(f => new Regex(f, caseSensitivity | RegexOptions.Compiled)).ToArray();
+            this.NegativeFileNameFilterRegex = negativeFilenameFilter.Select(f => new Regex(f, caseSensitivity | RegexOptions.Compiled)).ToArray();
             this.insideFileFilter = fileFilterRegex;
-            this.InsideFileFilterRegex = fileFilterRegex.Select(f => new Regex(f, RegexOptions.IgnoreCase | RegexOptions.Compiled)).ToList();
+            this.InsideFileFilterRegex = fileFilterRegex.Select(f => new Regex(f, caseSensitivity | RegexOptions.Compiled)).ToList();
             this.RootDirectory = rootDirectory;
-            List<string> rootPathList = rootDirectory.FullName.Split('\\').ToList();
+            List<string> rootPathList = rootDirectory.FullName.Split(separator).ToList();
             this.Root = rootPathList;
             this.RootHash = rootDirectory.FullName.GetHashCode();
             this.stuff = stuff;
             this.queue = new PriorityQueue<QueuedDirectory, double>();
             this.preQueue = new Dictionary<long, QueuedDirectory>();
+            this.separator = separator;
         }
 
         public override string ToString()
@@ -318,7 +323,7 @@ namespace CeeFind.BetterQueue
                     // Complex case: the path isn't a subdirectory of the root
                     else
                     {
-                        string[] pathParts = path.Split('\\');
+                        string[] pathParts = path.Split(separator);
                         
                         for (int i = 1; i < pathParts.Length; i++)
                         {
@@ -326,7 +331,7 @@ namespace CeeFind.BetterQueue
                             testPath.Append(RootDirectory.FullName);
                             for (int j = i; j < pathParts.Length; j++)
                             {
-                                testPath.Append('\\');
+                                testPath.Append(separator);
                                 testPath.Append(pathParts[j]);
                             }
 

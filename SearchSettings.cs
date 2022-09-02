@@ -27,7 +27,8 @@ namespace CeeFind
         [JsonIgnore]
         public bool WriteStateAsJson { get; internal set; }
         [JsonIgnore]
-        public bool NoRegexAssist { get; internal set; }
+        public bool NoRegexAssist { get; set; }
+        public bool CaseSensitive { get; set; }
 
         public override string ToString()
         {
