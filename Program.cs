@@ -111,6 +111,10 @@ namespace CeeFind
                         case "h":
                             settings.ShowHistory = true;
                             break;
+                        case "previous":
+                        case "p":
+                            settings.ShowPreviousResults = true;
+                            break;
                         case "dirs":
                         case "dir":
                         case "d":
@@ -139,6 +143,10 @@ namespace CeeFind
                         case "regex":
                         case "r":
                             settings.NoRegexAssist = true;
+                            break;
+                        case "ignorenewlines":
+                        case "n":
+                            settings.IgnoreNewLines = true;
                             break;
                     }
                 }
@@ -187,8 +195,17 @@ namespace CeeFind
                 }
             }
 
-            DirectoryInfo rootDirectory = new DirectoryInfo(rootDirectoryString);
+            /*if (settings.ShowPreviousResults)
+            {
+                (string, Metrics) mostRecent = stuff.SearchHistory.SelectMany(sh => sh.Value.Select(v => (sh.Key, v))).OrderByDescending(v => v.Item2.SearchDate).FirstOrDefault();
+                if (mostRecent != null)
+                {
+                    rootDirectoryString = mostRecent.Item1;
+                    settings = mostRecent.Item2.Settings;
+                }
+            }*/
 
+            DirectoryInfo rootDirectory = new DirectoryInfo(rootDirectoryString);
             if (filenameFilterRegex.All(f => f == "^.*$") && !negativeFilenameFilterRegex.Any())
             {
                 settings.ScanAllFiles = true;
@@ -324,7 +341,7 @@ namespace CeeFind
             }
             else
             {
-                IEnumerable<string> searchHistory = stuff.SearchHistory[rootDirectory.FullName].OrderByDescending(x => x.SearchDate).Select(x => $"{x.Args} ({(int)DateTime.UtcNow.Subtract(x.SearchDate).TotalDays} days ago)").Distinct();
+                IEnumerable<string> searchHistory = stuff.SearchHistory[rootDirectory.FullName].OrderByDescending(x => x.SearchDate).Select(x => $"{x.Args} ({HumanTime(DateTime.UtcNow.Subtract(x.SearchDate).TotalSeconds)} ago)").Distinct();
                 foreach (String search in searchHistory)
                 {
                     Console.WriteLine(search);
@@ -784,8 +801,15 @@ namespace CeeFind
             {
                 return ((int)Math.Ceiling(seconds / 10) * 10).ToString() + "s";
             }
-            
-            return ((int)Math.Ceiling(seconds / 60)).ToString() + "m";
+            else if (seconds < 60 * 60)
+            {
+                return ((int)Math.Ceiling(seconds / 60)).ToString() + "m";
+            }
+            else if (seconds < 60 * 60 * 24)
+            {
+                return ((int)Math.Ceiling(seconds / 60 / 60)).ToString() + "h";
+            }
+            return ((int)Math.Ceiling(seconds / 60 / 60 / 24)).ToString() + "d";
         }
 
         private static bool SearchFile(
@@ -835,11 +859,28 @@ namespace CeeFind
                                           FileAccess.Read,
                                           FileShare.ReadWrite))
                 {
+                    string str = string.Empty;
+                    bool isRead = false;
                     using (StreamReader sr = new StreamReader(file.FullName))
                     {
                         while (true)
                         {
-                            string str = sr.ReadLine();
+                            if (!metrics.Settings.IgnoreNewLines)
+                            {
+                                str = sr.ReadLine();
+                            }
+                            else
+                            {
+                                if (!isRead)
+                                {
+                                    str = sr.ReadToEnd();
+                                    isRead = true;
+                                }
+                                else
+                                {
+                                    break;
+                                }
+                            }
                             line = str;
                             if (str == null)
                             {
@@ -948,11 +989,18 @@ namespace CeeFind
                                 {
                                     lastPart = string.Concat(lastPart.Substring(0, 30), "...");
                                 }
-                                Console.Write(string.Concat(string.Format("{0} ({1},{2}):", file.Name, lineCount, result.Index).PadRight(35, ' '), firstPart));
+                                if (metrics.Settings.IgnoreNewLines)
+                                {
+                                    Console.Write(string.Concat(string.Format("{0} ({1}-{2}):", file.Name, result.Index, result.Index + capturedItem.Length).PadRight(35, ' '), firstPart));
+                                }
+                                else
+                                {
+                                    Console.Write(string.Concat(string.Format("{0} ({1},{2}):", file.Name, lineCount, result.Index).PadRight(35, ' '), firstPart));
+                                }
                                 Console.ForegroundColor = ConsoleColor.White;
                                 Console.Write(capturedItem);
                                 Console.ResetColor();
-                                Console.WriteLine(lastPart);
+                                Console.WriteLine(lastPart.Trim());
                             }
 
                             stuff.AddThing(
