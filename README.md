@@ -22,7 +22,18 @@ Smart:
 
 ## Installation
 
-1. Build .sln Release x64 in VS2022
+1. Build .sln Release x64 using msbuild.
+
+	a. Install msbuild on Windows: `winget install --id Microsoft.VisualStudio.2022.BuildTools --silent --accept-package-agreements --accept-source-agreements`
+
+	b. Install .NET SDK: https://dotnet.microsoft.com/en-us/download/visual-studio-sdks
+
+        c. Install nuget.exe
+
+	d. Run: `nuget restore`
+
+	e. Build: `msbuild CeeFind.sln`
+
 2. Add release bin directory to path environment variable
 
 ## Usage
