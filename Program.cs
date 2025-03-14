@@ -216,14 +216,38 @@ namespace CeeFind
             // Setup complete, proceed with search
             Stuff stuff = task.Result;
 
-            Console.CancelKeyPress += delegate
+            bool terminationInProgress = false;
+
+            Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs e)
             {
-                if (settings.IsVerbose)
+                // Prevent the process from terminating immediately
+                e.Cancel = true;
+                
+                if (!terminationInProgress)
                 {
-                    Console.WriteLine("Terminated early");
+                    terminationInProgress = true;
+                    
+                    if (settings.IsVerbose)
+                    {
+                        Console.WriteLine("Gracefully terminating, please wait...");
+                    }
+                    
+                    try
+                    {
+                        Finish(stuff, rootDirectory, true, false, false, stateFile, metrics);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (settings.IsVerbose)
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine($"Error during termination: {ex.Message}");
+                            Console.ResetColor();
+                        }
+                    }
+                    
+                    Environment.Exit(0);
                 }
-                Finish(stuff, rootDirectory, true, false, false, stateFile, metrics);
-                Environment.Exit(0);
             };
 
             if (settings.ShowHistory)
@@ -288,17 +312,58 @@ namespace CeeFind
 
         private static async Task<Stuff> LoadHistory(string stateFile)
         {
-            Stuff stuff;
-            using (FileStream stream = File.Open(stateFile, FileMode.Open))
+            Stuff stuff = null;
+            try
             {
-                using (GZipStream compressedStream = new GZipStream(stream, CompressionMode.Decompress))
+                using (FileStream stream = File.Open(stateFile, FileMode.Open))
                 {
-                    ValueTask<Stuff> task = JsonSerializer.DeserializeAsync<Stuff>(compressedStream);
-                    await task;
-                    stuff = task.Result;
+                    using (GZipStream compressedStream = new GZipStream(stream, CompressionMode.Decompress))
+                    {
+                        ValueTask<Stuff> task = JsonSerializer.DeserializeAsync<Stuff>(compressedStream);
+                        await task;
+                        stuff = task.Result;
+                    }
                 }
             }
-            return stuff;
+            catch (Exception ex)
+            {
+                // If we fail to load the state file, it might be corrupted
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"Warning: Could not load state file - {ex.Message}");
+                Console.WriteLine("Creating a new state file. Previous search history will not be available.");
+                Console.ResetColor();
+                
+                // Try to use backup if available
+                string backupFile = stateFile + ".bak";
+                if (File.Exists(backupFile))
+                {
+                    Console.WriteLine("Attempting to restore from backup...");
+                    try
+                    {
+                        using (FileStream stream = File.Open(backupFile, FileMode.Open))
+                        {
+                            using (GZipStream compressedStream = new GZipStream(stream, CompressionMode.Decompress))
+                            {
+                                ValueTask<Stuff> task = JsonSerializer.DeserializeAsync<Stuff>(compressedStream);
+                                await task;
+                                stuff = task.Result;
+                                Console.WriteLine("Successfully restored from backup.");
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        Console.WriteLine("Backup restoration failed. Creating new state.");
+                        stuff = new Stuff();
+                    }
+                }
+                else
+                {
+                    stuff = new Stuff();
+                }
+            }
+            
+            return stuff ?? new Stuff();
         }
 
         /// <summary>
@@ -391,10 +456,22 @@ namespace CeeFind
 
                 if (metrics.Settings.WriteStateAsJson)
                 {
-                    File.WriteAllText("state.json", JsonSerializer.Serialize(stuff, new JsonSerializerOptions
+                    try
                     {
-                        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault | JsonIgnoreCondition.WhenWritingNull
-                    }));
+                        File.WriteAllText("state.json", JsonSerializer.Serialize(stuff, new JsonSerializerOptions
+                        {
+                            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault | JsonIgnoreCondition.WhenWritingNull
+                        }));
+                    }
+                    catch (Exception ex)
+                    {
+                        if (metrics.Settings.IsVerbose)
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine($"Error writing state.json: {ex.Message}");
+                            Console.ResetColor();
+                        }
+                    }
                 }
 
                 if (metrics.IsFileNameSearchWithHumanReadableResults || metrics.IsFileSearchWithHumanReadableResults)
@@ -402,15 +479,44 @@ namespace CeeFind
                     // either complete, or early termination
                     if (isFinished || (isEarlyTerminated && DateTime.UtcNow.Subtract(metrics.SearchDate).TotalSeconds > 5))
                     {
-                        using (FileStream stream = File.Open(stateFile, FileMode.Create))
+                        try
                         {
-                            using (GZipStream compressedStream = new GZipStream(stream, CompressionMode.Compress))
+                            // Write to a temporary file first
+                            string tempStateFile = stateFile + ".temp";
+                            
+                            using (FileStream stream = File.Open(tempStateFile, FileMode.Create))
                             {
-                                Task task = JsonSerializer.SerializeAsync(compressedStream, stuff, new JsonSerializerOptions
+                                using (GZipStream compressedStream = new GZipStream(stream, CompressionMode.Compress))
                                 {
-                                    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault | JsonIgnoreCondition.WhenWritingNull
-                                });
-                                task.Wait();
+                                    Task task = JsonSerializer.SerializeAsync(compressedStream, stuff, new JsonSerializerOptions
+                                    {
+                                        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault | JsonIgnoreCondition.WhenWritingNull
+                                    });
+                                    task.Wait(); // Make sure serialization completes
+                                }
+                            }
+                            
+                            // After successful write, replace the original file
+                            if (File.Exists(stateFile))
+                            {
+                                string backupFile = stateFile + ".bak";
+                                // Keep a backup of the previous state file just in case
+                                if (File.Exists(backupFile))
+                                {
+                                    File.Delete(backupFile);
+                                }
+                                File.Move(stateFile, backupFile);
+                            }
+                            
+                            File.Move(tempStateFile, stateFile);
+                        }
+                        catch (Exception ex)
+                        {
+                            if (metrics.Settings.IsVerbose)
+                            {
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine($"Error saving state file: {ex.Message}");
+                                Console.ResetColor();
                             }
                         }
                     }
@@ -419,7 +525,6 @@ namespace CeeFind
                 Environment.Exit(0);
             }
         }
-
         private static void TopExtensionsReport(Metrics metrics)
         {
             GenerateExtensionReport(

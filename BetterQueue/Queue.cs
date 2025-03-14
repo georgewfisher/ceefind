@@ -102,6 +102,12 @@ namespace CeeFind.BetterQueue
             int parentHash = parent.FullName.GetHashCode();
             foreach (DirectoryInfo subfolder in subfolders)
             {
+                // Skip symlinks and junctions to prevent endless recursion
+                if ((subfolder.Attributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
+                {
+                    continue;
+                }
+
                 if (done.TryGetValue(subfolder.FullName.GetHashCode(), out QueuedDirectory qd)
                     && qd.IsVisited)
                 {
