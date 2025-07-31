@@ -45,9 +45,8 @@ namespace CeeFind
                 directorySeparator = DIRECTORY_SEPARATOR_OTHER;
             }
 
-            string codebase = Assembly.GetExecutingAssembly().GetName().CodeBase;
-            string stateFile = Path.Combine(Path.GetDirectoryName(codebase), "state_v2.json.gz");
-            stateFile = stateFile.Replace("file:\\", string.Empty);
+            string assemblyLocation = Assembly.GetExecutingAssembly().Location;
+            string stateFile = Path.Combine(Path.GetDirectoryName(assemblyLocation), "state_v2.json.gz");
             Task<Stuff> task;
             if (File.Exists(stateFile))
             {
