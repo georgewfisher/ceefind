@@ -23,7 +23,7 @@ namespace CeeFind
         private static HashSet<string> binaryFiles;
         private static ILogger<Program> log;
         private const long LARGE_FILE_SIZE = 1024 * 1024;
-        private const string INDEX_FILE_NAME = "index_v3.db";
+        private const string INDEX_FILE_NAME = "index.db";
         private static readonly object terminationLock = new object();
 
         public Program()

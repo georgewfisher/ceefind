@@ -15,7 +15,7 @@ namespace CeeFind.Storage
     /// </summary>
     internal static class IndexSchema
     {
-        internal const int SchemaVersion = 3;
+        internal const int SchemaVersion = 5;
 
         internal static SqliteConnection Open(string databasePath)
         {
@@ -29,6 +29,11 @@ namespace CeeFind.Storage
             SqliteConnection connection = new SqliteConnection(builder.ToString());
             connection.Open();
 
+            // Must be set before anything writes a page - including journal_mode - because
+            // SQLite can only choose this when the database is first created. Lets pruning
+            // return space to the filesystem instead of only freeing pages for reuse.
+            Execute(connection, "PRAGMA auto_vacuum=INCREMENTAL;");
+
             // WAL lets concurrent `f` invocations read while one writes, which the previous
             // whole-file rewrite could not do safely. busy_timeout absorbs the remaining
             // writer contention instead of surfacing it as an error to the user.
@@ -37,15 +42,29 @@ namespace CeeFind.Storage
             Execute(connection, "PRAGMA busy_timeout=5000;");
             Execute(connection, "PRAGMA temp_store=MEMORY;");
 
-            // Re-running the DDL on every invocation cost real milliseconds on the startup
-            // path. user_version lives in the database header, so this check is free.
+            // The index is a cache: everything in it is rediscoverable by walking. On a
+            // schema change it is cheaper and safer to rebuild than to migrate.
             if (ReadUserVersion(connection) != SchemaVersion)
             {
+                Reset(connection);
                 Create(connection);
                 Execute(connection, $"PRAGMA user_version={SchemaVersion};");
             }
 
             return connection;
+        }
+
+        private static void Reset(SqliteConnection connection)
+        {
+            Execute(connection, @"
+DROP TABLE IF EXISTS search_history;
+DROP TABLE IF EXISTS regex_thing;
+DROP TABLE IF EXISTS thing_content;
+DROP TABLE IF EXISTS thing;
+DROP TABLE IF EXISTS vertex_path;
+DROP TABLE IF EXISTS vertex;
+DROP TABLE IF EXISTS meta;
+");
         }
 
         private static int ReadUserVersion(SqliteConnection connection)
@@ -94,18 +113,21 @@ CREATE TABLE IF NOT EXISTS thing (
     filename           TEXT PRIMARY KEY COLLATE NOCASE,
     extension          TEXT NULL COLLATE NOCASE,
     last_seen_utc      INTEGER NOT NULL,
+    hits               INTEGER NOT NULL DEFAULT 1,
+    has_content        INTEGER NOT NULL DEFAULT 0,
     vertexes_json      TEXT NULL,
     regexes_json       TEXT NULL,
     found_strings_json TEXT NULL
 );
 
--- Turns the overwhelmingly common '*.ext' filter into an index seek instead of the
--- full key scan the in-memory version did at the start of every search.
+-- Narrows in-file searches to candidate files. Only content evidence and specific
+-- filename hits are stored now, so this is a small, high-value table.
 CREATE INDEX IF NOT EXISTS idx_thing_extension ON thing(extension);
 
--- Used only when a filter is not extension-shaped: lets the fallback take a bounded,
--- already-ordered slice instead of sorting the whole table. Prioritisation, not retention.
-CREATE INDEX IF NOT EXISTS idx_thing_last_seen ON thing(last_seen_utc DESC);
+-- Retention order: content evidence is expensive to rediscover (it means re-reading
+-- every candidate file), so it outranks filename-only records. Within a tier the
+-- measure is how often the entry has actually been useful, never how old it is.
+CREATE INDEX IF NOT EXISTS idx_thing_tier ON thing(has_content, hits);
 
 CREATE TABLE IF NOT EXISTS regex_thing (
     regex    TEXT NOT NULL,
@@ -113,6 +135,21 @@ CREATE TABLE IF NOT EXISTS regex_thing (
     used_utc INTEGER NOT NULL,
     PRIMARY KEY (regex, filename)
 );
+
+-- What was found *inside* files, keyed by the matched text. This is the expensive
+-- knowledge - rediscovering it means re-reading every candidate file - so it gets a
+-- direct seek rather than being filtered out of a wider scan in memory.
+-- kind 0 = a search expression previously used, 1 = a string previously captured.
+CREATE TABLE IF NOT EXISTS thing_content (
+    value     TEXT NOT NULL,
+    filename  TEXT NOT NULL COLLATE NOCASE,
+    kind      INTEGER NOT NULL,
+    found_utc INTEGER NOT NULL,
+    PRIMARY KEY (value, filename, kind)
+);
+
+CREATE INDEX IF NOT EXISTS idx_content_filename ON thing_content(filename);
+CREATE INDEX IF NOT EXISTS idx_content_kind ON thing_content(kind);
 
 CREATE TABLE IF NOT EXISTS search_history (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,

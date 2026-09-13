@@ -38,7 +38,7 @@ Smart:
 
 CeeFind keeps its index and search history in a SQLite database in a per-user directory:
 
-* Windows: `%LOCALAPPDATA%\CeeFind\index_v3.db`
+* Windows: `%LOCALAPPDATA%\CeeFind\index.db`
 * Other platforms: `$XDG_DATA_HOME`/`~/.local/share` equivalent resolved by .NET
 
 Nothing is written next to the executable, so CeeFind works when installed to a
@@ -51,14 +51,27 @@ transaction. Startup cost is therefore flat as the index grows, and concurrent
 
 To reset the index, delete the database.
 
-### What CeeFind forgets
+### What CeeFind remembers, and what it forgets
 
-Following the "don't remember everything" principle, the index is bounded — but
-never by age. A location you found something in two years ago is exactly what you
-are least likely to remember yourself, so age is used only to *rank* results, never
-to decide what to discard. Entries are retired when they are provably invalid (the
-directory no longer exists, noticed for free during a search) or when they are
-traversal residue that never produced a result and costs nothing to rediscover.
+Index space is spent in proportion to how hard something is to rediscover:
+
+1. **Directory shape** — which directories, in which recurring layouts, tend to hold
+   what you want. This is the primary asset, and the last thing discarded.
+2. **Content evidence** — what was found *inside* files. The most expensive knowledge
+   to rebuild, because the alternative is re-reading every candidate file.
+3. **Specific filenames** — worth remembering, but cheap to find again by walking.
+4. **Traversal residue** — directory names that never produced a result. Rebuilt for
+   free by the next walk, so evicted first.
+
+Files matched purely by suffix (`*.cs`) are deliberately **not** indexed. One walk
+finds them with no file reads, so storing them would consume the budget that the
+first two tiers need.
+
+The index is capped at 256MB. Within every tier the measure is how often an entry has
+actually been useful — never how old it is. A location you found something in two
+years ago is precisely what you are least likely to remember unaided, so age ranks
+results but never decides what to discard. Entries are also retired when provably
+invalid, noticed for free during a search that was already resolving them.
 
 ## Usage
 

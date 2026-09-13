@@ -22,13 +22,12 @@ namespace CeeFind.BetterQueue
     /// </summary>
     internal sealed class Stuff : IDisposable
     {
-        // Retention budgets. Generous by design: this index exists to remember locations
-        // the user no longer can, so pressure is aimed at traversal residue rather than
-        // at earned evidence.
-        private const int MaxVertexTotal = 100_000;
-        private const int MaxVertexWithEvidence = 50_000;
-        private const int MaxThings = 200_000;
-        private const int MaxRegexes = 5_000;
+        // Retention budget. A size rather than a row count: the index loads lazily, so its
+        // footprint no longer drives memory, and what actually matters is disk. Generous by
+        // design - this index exists to remember locations the user no longer can - and in
+        // practice usage sits well below it now that suffix-only records are not stored.
+        private const long MaxIndexBytes = 256L * 1024 * 1024;
+
         private const int MaxPathsPerVertex = 500;
         private const int MaxHistoryRoots = 500;
         private const int MaxHistoryPerRoot = 25;
@@ -41,6 +40,12 @@ namespace CeeFind.BetterQueue
         /// How many searches may pass between retention sweeps.
         /// </summary>
         private const int SearchesBetweenPrunes = 50;
+
+        /// <summary>
+        /// Bound on the distinct-captured-value scan used for pattern matching in-file
+        /// searches. Distinct values are far fewer than the files containing them.
+        /// </summary>
+        private const int DistinctContentScanLimit = 50_000;
 
         /// <summary>
         /// Matches the regex CeeFind builds for a plain '*.ext' filter, with the dot either
@@ -70,6 +75,9 @@ namespace CeeFind.BetterQueue
 
         private readonly List<(string Root, Metrics Metrics)> pendingHistory =
             new List<(string, Metrics)>();
+
+        private readonly List<(string VertexName, string Path)> pendingPathDeletes =
+            new List<(string, string)>();
 
         private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions();
 
@@ -237,166 +245,179 @@ namespace CeeFind.BetterQueue
         /// replaced turned a large index into thousands of round trips.
         /// </summary>
         /// <summary>
-        /// Fast path for a plain '*.ext' filter with no in-file filters, which is the most
-        /// common search there is.
+        /// The directories that have most often produced results, for rebasing onto the
+        /// current root.
         ///
-        /// All the queue ultimately needs from the index is the set of directory names worth
-        /// visiting, so this resolves that inside SQL and returns a handful of rows, rather
-        /// than materialising and JSON-parsing thousands of file records to derive the same
-        /// few names in memory. Scoring is unchanged: with no in-file filters every matching
-        /// file contributed an identical score, so one rarity-adjusted value covers them all.
+        /// This is the index's primary asset. Finding files by suffix is trivial - one walk,
+        /// no file reads - so it is not worth indexing. What is genuinely hard to rediscover
+        /// is which directories, in which recurring shapes, tend to hold what you want. That
+        /// is what this returns, ranked by how often each has actually delivered.
         /// </summary>
-        internal bool TryGetCandidateVertexesForExtension(
-            string filterPattern,
-            out List<string> vertexNames,
-            out long matchingThings)
+        internal List<string> GetShapeSeedVertexes(int limit)
         {
-            vertexNames = null;
-            matchingThings = 0;
+            List<string> names = new List<string>();
 
-            Match extensionMatch = ExtensionShapedFilter.Match(filterPattern);
-            if (!extensionMatch.Success)
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                "SELECT name FROM vertex WHERE find_count > 0 " +
+                "ORDER BY find_count DESC, path_count DESC LIMIT $limit;";
+            command.Parameters.AddWithValue("$limit", limit);
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            while (reader.Read())
             {
-                return false;
+                names.Add(reader.GetString(0));
             }
 
-            string extension = extensionMatch.Groups[1].Value;
-
-            try
-            {
-                List<string> names = new List<string>();
-                using (SqliteCommand command = connection.CreateCommand())
-                {
-                    command.CommandText =
-                        "SELECT DISTINCT je.value FROM thing t, json_each(t.vertexes_json) je " +
-                        "WHERE t.extension = $ext;";
-                    command.Parameters.AddWithValue("$ext", extension);
-
-                    using SqliteDataReader reader = command.ExecuteReader();
-                    while (reader.Read())
-                    {
-                        if (!reader.IsDBNull(0))
-                        {
-                            names.Add(reader.GetString(0));
-                        }
-                    }
-                }
-
-                using (SqliteCommand count = connection.CreateCommand())
-                {
-                    count.CommandText = "SELECT COUNT(*) FROM thing WHERE extension = $ext;";
-                    count.Parameters.AddWithValue("$ext", extension);
-                    object value = count.ExecuteScalar();
-                    matchingThings = value == null || value == DBNull.Value ? 0 : Convert.ToInt64(value);
-                }
-
-                vertexNames = names;
-                return true;
-            }
-            catch (SqliteException)
-            {
-                // json_each is unavailable in this SQLite build - fall back to the
-                // general path rather than failing the search.
-                return false;
-            }
+            return names;
         }
 
         /// <summary>
-        /// Directories where this exact filter previously found something. Kept distinct
-        /// from the extension lookup because a confirmed prior hit is stronger evidence
-        /// than "a file with this extension lives here".
+        /// Directories where the given in-file searches have previously matched, with how
+        /// recently, resolved by direct seek on the matched text.
+        ///
+        /// This is the index's highest-value query: without it an in-file search has to
+        /// re-read every candidate file. Values are matched exactly where possible; captured
+        /// strings additionally support pattern matching, done over the distinct captured
+        /// values, which is a far smaller set than the files containing them.
         /// </summary>
-        internal bool TryGetCandidateVertexesForRegex(
-            string regex,
-            out List<string> vertexNames,
-            out long matchingThings)
+        internal Dictionary<string, DateTime> GetContentSeedVertexes(
+            List<string> insideFilters, List<Regex> insideRegexes)
         {
-            vertexNames = null;
-            matchingThings = 0;
+            Dictionary<string, DateTime> byVertex =
+                new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
-            try
+            HashSet<string> values = new HashSet<string>(insideFilters, StringComparer.Ordinal);
+
+            // Captured strings are matched by pattern, so resolve which distinct captured
+            // values qualify before seeking the files that contain them.
+            if (insideRegexes.Count > 0)
             {
-                List<string> names = new List<string>();
-                using (SqliteCommand command = connection.CreateCommand())
-                {
-                    command.CommandText =
-                        "SELECT DISTINCT je.value " +
-                        "FROM regex_thing r JOIN thing t ON t.filename = r.filename, " +
-                        "     json_each(t.vertexes_json) je " +
-                        "WHERE r.regex = $regex;";
-                    command.Parameters.AddWithValue("$regex", regex);
+                using SqliteCommand distinct = connection.CreateCommand();
+                distinct.CommandText =
+                    "SELECT DISTINCT value FROM thing_content WHERE kind = 1 LIMIT $limit;";
+                distinct.Parameters.AddWithValue("$limit", DistinctContentScanLimit);
 
-                    using SqliteDataReader reader = command.ExecuteReader();
-                    while (reader.Read())
+                using SqliteDataReader reader = distinct.ExecuteReader();
+                while (reader.Read())
+                {
+                    string value = reader.GetString(0);
+                    foreach (Regex pattern in insideRegexes)
                     {
-                        if (!reader.IsDBNull(0))
+                        if (pattern.IsMatch(value))
                         {
-                            names.Add(reader.GetString(0));
+                            values.Add(value);
+                            break;
                         }
                     }
                 }
+            }
 
-                using (SqliteCommand count = connection.CreateCommand())
+            if (values.Count == 0)
+            {
+                return byVertex;
+            }
+
+            try
+            {
+                using SqliteCommand command = connection.CreateCommand();
+                List<string> parameterNames = new List<string>();
+                int index = 0;
+                foreach (string value in values)
                 {
-                    count.CommandText = "SELECT COUNT(*) FROM regex_thing WHERE regex = $regex;";
-                    count.Parameters.AddWithValue("$regex", regex);
-                    object value = count.ExecuteScalar();
-                    matchingThings = value == null || value == DBNull.Value ? 0 : Convert.ToInt64(value);
+                    string name = "$v" + index++;
+                    parameterNames.Add(name);
+                    command.Parameters.AddWithValue(name, value);
                 }
 
-                vertexNames = names;
-                return true;
+                command.CommandText =
+                    "SELECT je.value, MAX(tc.found_utc) " +
+                    "FROM thing_content tc " +
+                    "JOIN thing t ON t.filename = tc.filename, json_each(t.vertexes_json) je " +
+                    $"WHERE tc.value IN ({string.Join(",", parameterNames)}) " +
+                    "GROUP BY je.value;";
+
+                using SqliteDataReader reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    if (!reader.IsDBNull(0))
+                    {
+                        byVertex[reader.GetString(0)] = FromUnix(reader.GetInt64(1));
+                    }
+                }
             }
             catch (SqliteException)
             {
-                return false;
+                // json_each unavailable - the walk still finds everything, just unaided.
+            }
+
+            return byVertex;
+        }
+
+        /// <summary>
+        /// Reads just enough locations to seed a search, without claiming the vertex's full
+        /// path set is loaded.
+        ///
+        /// Paths already under this root come first because they are exact hits; the rest are
+        /// ordered by how often they have delivered, since only a bounded number will be
+        /// speculatively rebased. Loading every location for every seeded vertex was costing
+        /// tens of thousands of rows per search for candidates that were never used.
+        /// </summary>
+        internal List<(string Path, int Finds)> GetSeedPaths(string vertexName, string rootPrefix, int limit)
+        {
+            List<(string, int)> paths = new List<(string, int)>();
+
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                "SELECT path, finds FROM vertex_path WHERE vertex_name = $name " +
+                "ORDER BY (CASE WHEN path LIKE $prefix THEN 0 ELSE 1 END), finds DESC LIMIT $limit;";
+            command.Parameters.AddWithValue("$name", vertexName);
+            command.Parameters.AddWithValue("$prefix", Escape(rootPrefix) + "%");
+            command.Parameters.AddWithValue("$limit", limit);
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                paths.Add((reader.GetString(0), reader.GetInt32(1)));
+            }
+
+            return paths;
+        }
+
+        /// <summary>
+        /// Retires a location that no longer exists without paying to load the vertex's
+        /// whole path set first.
+        /// </summary>
+        internal void ForgetLocationDirect(Vertex vertex, string absolutePath)
+        {
+            pendingPathDeletes.Add((vertex.Name, absolutePath));
+
+            if (vertex.ArePathsLoaded && vertex.AbsolutePaths != null)
+            {
+                vertex.ForgetLocation(absolutePath);
+            }
+            else if (vertex.PathCount > 0)
+            {
+                vertex.PathCount--;
+                vertex.IsDirty = true;
             }
         }
 
-        internal List<Thing> GetThingsForRegex(string regex, int limit, bool needInsideDetail)
+        private static string Escape(string value)
+        {
+            return value.Replace("%", "\\%").Replace("_", "\\_");
+        }
+
+        internal List<Thing> GetThingsForRegex(string regex, bool needInsideDetail)
         {
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 "SELECT t.filename, t.vertexes_json, t.regexes_json, t.found_strings_json " +
                 "FROM regex_thing r JOIN thing t ON t.filename = r.filename " +
-                "WHERE r.regex = $regex LIMIT $limit;";
+                "WHERE r.regex = $regex;";
             command.Parameters.AddWithValue("$regex", regex);
-            command.Parameters.AddWithValue("$limit", limit);
 
             return ReadThings(command, null, needInsideDetail);
-        }
-
-        /// <summary>
-        /// Previously-seen files matching a filter.
-        ///
-        /// The in-memory version walked every key in the index here, which after this port
-        /// would have meant a full table scan before the first result - the one thing that
-        /// would have undermined moving to SQLite at all. An extension-shaped filter (the
-        /// common case) becomes an index seek; anything else takes a bounded slice. Results
-        /// are capped because this is a heuristic accelerator: whatever it misses is still
-        /// reached by the ordinary walk.
-        /// </summary>
-        internal List<Thing> FindThingsMatching(string filterPattern, Regex compiled, int limit, bool needInsideDetail)
-        {
-            Match extensionMatch = ExtensionShapedFilter.Match(filterPattern);
-
-            using SqliteCommand command = connection.CreateCommand();
-            if (extensionMatch.Success)
-            {
-                command.CommandText =
-                    "SELECT filename, vertexes_json, regexes_json, found_strings_json " +
-                    "FROM thing WHERE extension = $ext LIMIT $limit;";
-                command.Parameters.AddWithValue("$ext", extensionMatch.Groups[1].Value);
-            }
-            else
-            {
-                command.CommandText =
-                    "SELECT filename, vertexes_json, regexes_json, found_strings_json " +
-                    "FROM thing ORDER BY last_seen_utc DESC LIMIT $limit;";
-            }
-
-            command.Parameters.AddWithValue("$limit", limit);
-            return ReadThings(command, compiled, needInsideDetail);
         }
 
         /// <summary>
@@ -458,6 +479,20 @@ namespace CeeFind.BetterQueue
             Vertex vertex)
         {
             DateTime now = DateTime.UtcNow;
+            bool hasContent = insideRegex.Count > 0 || insideCapture.Count > 0;
+
+            // A filename matched purely by its suffix is the cheapest thing there is to
+            // rediscover - one walk, no file reads - so it earns no index space. The find is
+            // still recorded against the vertex, which is where the durable value lives:
+            // which directories, in which shapes, tend to hold what you are looking for.
+            string[] worthRecording = hasContent
+                ? filenameRegexes
+                : filenameRegexes.Where(f => !ExtensionShapedFilter.IsMatch(f)).ToArray();
+
+            if (!hasContent && worthRecording.Length == 0)
+            {
+                return;
+            }
 
             if (!TryGetThing(filename, out Thing thing))
             {
@@ -484,7 +519,7 @@ namespace CeeFind.BetterQueue
 
             dirtyThings[filename] = thing;
 
-            foreach (string filenameRegex in filenameRegexes)
+            foreach (string filenameRegex in worthRecording)
             {
                 if (!dirtyRegexLinks.TryGetValue(filenameRegex, out HashSet<string> links))
                 {
@@ -568,6 +603,7 @@ namespace CeeFind.BetterQueue
             foreach (Thing thing in dirtyThings.Values)
             {
                 WriteThing(transaction, thing);
+                WriteThingContent(transaction, thing);
             }
 
             foreach (KeyValuePair<string, HashSet<string>> link in dirtyRegexLinks)
@@ -583,6 +619,17 @@ namespace CeeFind.BetterQueue
                 WriteHistory(transaction, root, metrics);
             }
 
+            foreach ((string vertexName, string path) in pendingPathDeletes)
+            {
+                using SqliteCommand delete = connection.CreateCommand();
+                delete.Transaction = transaction;
+                delete.CommandText =
+                    "DELETE FROM vertex_path WHERE vertex_name = $name AND path = $path;";
+                delete.Parameters.AddWithValue("$name", vertexName);
+                delete.Parameters.AddWithValue("$path", path);
+                delete.ExecuteNonQuery();
+            }
+
             transaction.Commit();
 
             foreach (Vertex vertex in vertexCache.Values)
@@ -594,6 +641,7 @@ namespace CeeFind.BetterQueue
             dirtyThings.Clear();
             dirtyRegexLinks.Clear();
             pendingHistory.Clear();
+            pendingPathDeletes.Clear();
         }
 
         private void WriteVertex(SqliteTransaction transaction, Vertex vertex)
@@ -662,13 +710,7 @@ ON CONFLICT(name) DO UPDATE SET
 
             name.Value = vertex.Name;
 
-            // Keep the strongest evidence if a single name has accumulated more known
-            // locations than the per-vertex budget allows.
-            IEnumerable<KeyValuePair<string, PathStat>> retained = vertex.AbsolutePaths.Count > MaxPathsPerVertex
-                ? vertex.AbsolutePaths.OrderByDescending(p => p.Value.Finds).Take(MaxPathsPerVertex)
-                : vertex.AbsolutePaths;
-
-            foreach (KeyValuePair<string, PathStat> entry in retained)
+            foreach (KeyValuePair<string, PathStat> entry in vertex.AbsolutePaths)
             {
                 path.Value = entry.Key;
                 finds.Value = entry.Value.Finds;
@@ -682,23 +724,69 @@ ON CONFLICT(name) DO UPDATE SET
             using SqliteCommand command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = @"
-INSERT INTO thing (filename, extension, last_seen_utc, vertexes_json, regexes_json, found_strings_json)
-VALUES ($filename, $extension, $lastSeen, $vertexes, $regexes, $foundStrings)
+INSERT INTO thing (filename, extension, last_seen_utc, hits, has_content, vertexes_json, regexes_json, found_strings_json)
+VALUES ($filename, $extension, $lastSeen, 1, $hasContent, $vertexes, $regexes, $foundStrings)
 ON CONFLICT(filename) DO UPDATE SET
     extension          = excluded.extension,
     last_seen_utc      = excluded.last_seen_utc,
+    hits               = thing.hits + 1,
+    has_content        = MAX(thing.has_content, excluded.has_content),
     vertexes_json      = excluded.vertexes_json,
     regexes_json       = excluded.regexes_json,
     found_strings_json = excluded.found_strings_json;";
 
+            bool hasContent = thing.Regexes.Count > 0 || thing.FoundStrings.Count > 0;
+
             command.Parameters.AddWithValue("$filename", thing.Filename);
             command.Parameters.AddWithValue("$extension", (object)GetExtension(thing.Filename) ?? DBNull.Value);
             command.Parameters.AddWithValue("$lastSeen", ToUnix(DateTime.UtcNow));
+            command.Parameters.AddWithValue("$hasContent", hasContent ? 1 : 0);
             command.Parameters.AddWithValue("$vertexes", JsonSerializer.Serialize(thing.VertexNames, JsonOptions));
             command.Parameters.AddWithValue("$regexes", JsonSerializer.Serialize(thing.Regexes, JsonOptions));
             command.Parameters.AddWithValue("$foundStrings", JsonSerializer.Serialize(thing.FoundStrings, JsonOptions));
 
             command.ExecuteNonQuery();
+        }
+
+        /// <summary>
+        /// Mirrors a thing's in-file findings into the seekable content table.
+        /// </summary>
+        private void WriteThingContent(SqliteTransaction transaction, Thing thing)
+        {
+            if (thing.Regexes.Count == 0 && thing.FoundStrings.Count == 0)
+            {
+                return;
+            }
+
+            using SqliteCommand command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText =
+                "INSERT INTO thing_content (value, filename, kind, found_utc) " +
+                "VALUES ($value, $filename, $kind, $found) " +
+                "ON CONFLICT(value, filename, kind) DO UPDATE SET found_utc = excluded.found_utc;";
+
+            SqliteParameter value = command.Parameters.Add("$value", SqliteType.Text);
+            SqliteParameter filename = command.Parameters.Add("$filename", SqliteType.Text);
+            SqliteParameter kind = command.Parameters.Add("$kind", SqliteType.Integer);
+            SqliteParameter found = command.Parameters.Add("$found", SqliteType.Integer);
+
+            filename.Value = thing.Filename;
+
+            kind.Value = 0;
+            foreach (KeyValuePair<string, DateTime> entry in thing.Regexes)
+            {
+                value.Value = entry.Key;
+                found.Value = ToUnix(entry.Value);
+                command.ExecuteNonQuery();
+            }
+
+            kind.Value = 1;
+            foreach (KeyValuePair<string, DateTime> entry in thing.FoundStrings)
+            {
+                value.Value = entry.Key;
+                found.Value = ToUnix(entry.Value);
+                command.ExecuteNonQuery();
+            }
         }
 
         private void WriteRegexLink(SqliteTransaction transaction, string regex, string filename)
@@ -730,16 +818,26 @@ ON CONFLICT(filename) DO UPDATE SET
         // ------------------------------------------------------------------- prune
 
         /// <summary>
-        /// Enforces the retention budgets.
+        /// Enforces the retention budget.
         ///
-        /// Gated deliberately. The budget checks and referential sweeps are full-table
-        /// operations, and running them after every single search dominated the cost of a
-        /// search against a large index. Growth is slow relative to the budgets, so
-        /// amortising this over many searches costs nothing in practice.
+        /// The budget is a size, not a row count, because what matters is the footprint on
+        /// disk - and since the index loads lazily, that footprint no longer drives memory.
         ///
-        /// Order matters: residue before evidence, and never by age. A find from two years
-        /// ago in a directory that still exists is exactly what the user cannot remember on
-        /// their own, so it outranks a recent find for retention purposes.
+        /// Eviction runs in reverse order of how hard something is to rediscover:
+        ///   1. traversal residue      - directory names that never produced a find, rebuilt
+        ///                               for free by the next walk
+        ///   2. filename-only records  - a specific name worth remembering, but cheap to
+        ///                               find again by walking
+        ///   3. content evidence       - expensive: rediscovering it means re-reading every
+        ///                               candidate file
+        ///   4. the shape graph        - the primary asset, and the last thing to go
+        ///
+        /// Within every tier the measure is how often an entry has actually been useful.
+        /// Age is never a factor: an old find is what the user is least able to remember
+        /// unaided, so recency ranks results but never decides what to discard.
+        ///
+        /// Gated, because these are full-table operations and running them after every
+        /// search dominated the cost of searching against a large index.
         /// </summary>
         internal void Prune()
         {
@@ -750,64 +848,10 @@ ON CONFLICT(filename) DO UPDATE SET
 
             using SqliteTransaction transaction = connection.BeginTransaction();
 
-            long totalVertexes = ScalarCount(transaction, "SELECT COUNT(*) FROM vertex;");
-            if (totalVertexes > MaxVertexTotal)
-            {
-                long target = (long)(MaxVertexTotal * LowWaterMark);
-
-                // Tier 1: traversal residue. Never produced a find, rebuilt for free by the
-                // next walk, so it absorbs the pressure first.
-                long excess = totalVertexes - target;
-                Execute(
-                    transaction,
-                    "DELETE FROM vertex WHERE name IN (" +
-                    "  SELECT name FROM vertex WHERE find_count = 0 ORDER BY visits ASC LIMIT $limit);",
-                    ("$limit", excess));
-
-                // Tier 2: only if earned evidence alone still exceeds its own budget.
-                long withEvidence = ScalarCount(
-                    transaction, "SELECT COUNT(*) FROM vertex WHERE find_count > 0;");
-                if (withEvidence > MaxVertexWithEvidence)
-                {
-                    long evidenceExcess = withEvidence - (long)(MaxVertexWithEvidence * LowWaterMark);
-                    Execute(
-                        transaction,
-                        "DELETE FROM vertex WHERE name IN (" +
-                        "  SELECT name FROM vertex WHERE find_count > 0 " +
-                        "  ORDER BY find_count ASC, path_count ASC LIMIT $limit);",
-                        ("$limit", evidenceExcess));
-                }
-            }
-
-            long things = ScalarCount(transaction, "SELECT COUNT(*) FROM thing;");
-            if (things > MaxThings)
-            {
-                long excess = things - (long)(MaxThings * LowWaterMark);
-                Execute(
-                    transaction,
-                    "DELETE FROM thing WHERE filename IN (" +
-                    "  SELECT t.filename FROM thing t " +
-                    "  ORDER BY (SELECT COUNT(*) FROM regex_thing r WHERE r.filename = t.filename) ASC " +
-                    "  LIMIT $limit);",
-                    ("$limit", excess));
-            }
-
-            long regexes = ScalarCount(transaction, "SELECT COUNT(DISTINCT regex) FROM regex_thing;");
-            if (regexes > MaxRegexes)
-            {
-                long excess = regexes - (long)(MaxRegexes * LowWaterMark);
-                Execute(
-                    transaction,
-                    "DELETE FROM regex_thing WHERE regex IN (" +
-                    "  SELECT regex FROM regex_thing GROUP BY regex " +
-                    "  ORDER BY COUNT(*) ASC LIMIT $limit);",
-                    ("$limit", excess));
-            }
-
-            // Referential cleanup. The two lookups that dereference these names were made
-            // defensive as well, but leaving dangling rows would silently waste index space.
+            // Referential cleanup first: it is pure waste and may be enough on its own.
             Execute(transaction, "DELETE FROM vertex_path WHERE vertex_name NOT IN (SELECT name FROM vertex);");
             Execute(transaction, "DELETE FROM regex_thing WHERE filename NOT IN (SELECT filename FROM thing);");
+            Execute(transaction, "DELETE FROM thing_content WHERE filename NOT IN (SELECT filename FROM thing);");
 
             // History is the one place age is the correct key: -h is a recency feature.
             Execute(
@@ -825,11 +869,87 @@ ON CONFLICT(filename) DO UPDATE SET
                 "    ORDER BY search_date_utc DESC LIMIT $limit));",
                 ("$limit", MaxHistoryPerRoot));
 
+            // Per-vertex location cap: keep the locations that have delivered most often.
+            Execute(
+                transaction,
+                "DELETE FROM vertex_path WHERE rowid NOT IN (" +
+                "  SELECT rowid FROM vertex_path vp WHERE vp.rowid IN (" +
+                "    SELECT rowid FROM vertex_path WHERE vertex_name = vp.vertex_name " +
+                "    ORDER BY finds DESC LIMIT $limit));",
+                ("$limit", MaxPathsPerVertex));
+
+            long target = (long)(MaxIndexBytes * LowWaterMark);
+            if (EstimateSizeBytes(transaction) > MaxIndexBytes)
+            {
+                PruneTier(transaction, target,
+                    "DELETE FROM vertex WHERE name IN (" +
+                    "  SELECT name FROM vertex WHERE find_count = 0 ORDER BY visits ASC LIMIT $limit);");
+
+                PruneTier(transaction, target,
+                    "DELETE FROM thing WHERE filename IN (" +
+                    "  SELECT filename FROM thing WHERE has_content = 0 ORDER BY hits ASC LIMIT $limit);");
+
+                PruneTier(transaction, target,
+                    "DELETE FROM thing WHERE filename IN (" +
+                    "  SELECT filename FROM thing WHERE has_content = 1 ORDER BY hits ASC LIMIT $limit);");
+
+                PruneTier(transaction, target,
+                    "DELETE FROM vertex WHERE name IN (" +
+                    "  SELECT name FROM vertex WHERE find_count > 0 " +
+                    "  ORDER BY find_count ASC, path_count ASC LIMIT $limit);");
+
+                // Re-run referential cleanup for anything the tiers orphaned.
+                Execute(transaction, "DELETE FROM vertex_path WHERE vertex_name NOT IN (SELECT name FROM vertex);");
+                Execute(transaction, "DELETE FROM regex_thing WHERE filename NOT IN (SELECT filename FROM thing);");
+                Execute(transaction, "DELETE FROM thing_content WHERE filename NOT IN (SELECT filename FROM thing);");
+            }
+
             transaction.Commit();
+
+            // Return freed pages to the filesystem. Outside the transaction, because
+            // incremental_vacuum cannot run inside one.
+            using SqliteCommand vacuum = connection.CreateCommand();
+            vacuum.CommandText = "PRAGMA incremental_vacuum;";
+            vacuum.ExecuteNonQuery();
         }
 
-        // ------------------------------------------------------------------ export
+        /// <summary>
+        /// Deletes from one tier in bounded batches until the index is back under target or
+        /// the tier is exhausted, so a single sweep never has to sort an entire table.
+        /// </summary>
+        private void PruneTier(SqliteTransaction transaction, long targetBytes, string deleteSql)
+        {
+            const int BatchSize = 10_000;
 
+            while (EstimateSizeBytes(transaction) > targetBytes)
+            {
+                using SqliteCommand command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = deleteSql;
+                command.Parameters.AddWithValue("$limit", BatchSize);
+
+                if (command.ExecuteNonQuery() == 0)
+                {
+                    return;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Current on-disk footprint. Freelist pages are excluded because they are already
+        /// available for reuse.
+        /// </summary>
+        private long EstimateSizeBytes(SqliteTransaction transaction)
+        {
+            long pageSize = ScalarCount(transaction, "PRAGMA page_size;");
+            long pageCount = ScalarCount(transaction, "PRAGMA page_count;");
+            long freePages = ScalarCount(transaction, "PRAGMA freelist_count;");
+            return Math.Max(pageCount - freePages, 0) * pageSize;
+        }
+        /// <summary>
+        /// Cheap point read against meta, so the expensive budget work only happens
+        /// periodically rather than on the critical path of every search.
+        /// </summary>
         /// <summary>
         /// Supports the -json flag. Streams the index out rather than holding it in memory.
         /// </summary>
@@ -844,7 +964,8 @@ ON CONFLICT(filename) DO UPDATE SET
             using (SqliteCommand command = connection.CreateCommand())
             {
                 command.CommandText =
-                    "SELECT name, visits, find_count, last_find_utc, path_count FROM vertex;";
+                    "SELECT name, visits, find_count, last_find_utc, path_count FROM vertex " +
+                    "ORDER BY find_count DESC;";
                 using SqliteDataReader reader = command.ExecuteReader();
                 while (reader.Read())
                 {
@@ -865,15 +986,18 @@ ON CONFLICT(filename) DO UPDATE SET
             writer.WriteStartArray("Things");
             using (SqliteCommand command = connection.CreateCommand())
             {
-                command.CommandText = "SELECT filename, vertexes_json FROM thing;";
+                command.CommandText =
+                    "SELECT filename, hits, has_content, vertexes_json FROM thing ORDER BY hits DESC;";
                 using SqliteDataReader reader = command.ExecuteReader();
                 while (reader.Read())
                 {
                     writer.WriteStartObject();
                     writer.WriteString("Filename", reader.GetString(0));
-                    if (!reader.IsDBNull(1))
+                    writer.WriteNumber("Hits", reader.GetInt32(1));
+                    writer.WriteBoolean("HasContent", reader.GetInt32(2) != 0);
+                    if (!reader.IsDBNull(3))
                     {
-                        writer.WriteString("Vertexes", reader.GetString(1));
+                        writer.WriteString("Vertexes", reader.GetString(3));
                     }
                     writer.WriteEndObject();
                 }
@@ -883,17 +1007,6 @@ ON CONFLICT(filename) DO UPDATE SET
             writer.WriteEndObject();
         }
 
-        // ------------------------------------------------------------------ helpers
-
-        /// <summary>
-        /// Forces the write-ahead log back into the main database file. Worth doing after a
-        /// bulk import: leaving a multi-megabyte WAL behind makes the next few searches pay
-        /// to read through it, which showed up as a dramatic one-off slowdown after upgrade.
-        /// </summary>
-        /// <summary>
-        /// Cheap point read against meta, so the expensive budget work only happens
-        /// periodically rather than on the critical path of every search.
-        /// </summary>
         private bool ShouldPruneNow()
         {
             const string CounterKey = "searches_since_prune";

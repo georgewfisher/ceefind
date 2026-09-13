@@ -38,11 +38,18 @@ namespace CeeFind.BetterQueue
         private readonly long BASE_SCORE = 100;
 
         /// <summary>
-        /// Upper bound on index candidates considered per filter. The index is a heuristic
-        /// accelerator - anything beyond this is still reached by the ordinary walk - so
-        /// capping it keeps startup bounded no matter how large the index grows.
+        /// How many of the most productive directory names to rebase onto the current root.
+        /// These are whole directories, not matched files, so the set is inherently small
+        /// and each is expanded once.
         /// </summary>
-        private const int IndexCandidateLimit = 2000;
+        private const int ShapeSeedLimit = 50;
+
+        /// <summary>
+        /// Per-vertex bound on speculative cross-codebase rebasing. Storage is deliberately
+        /// generous - every known location is kept - but probing all of them on every search
+        /// is what makes a large index feel slow, so the work is capped, not the data.
+        /// </summary>
+        private const int RebaseAttemptsPerVertex = 32;
 
         public CeeFindQueue(
             char separator,
@@ -245,10 +252,14 @@ namespace CeeFind.BetterQueue
         /// <summary>
         /// Seeds the queue from the index.
         ///
-        /// Candidate files are resolved to the set of directories worth visiting, and each
-        /// of those directories is expanded exactly once at its best score. Expanding per
-        /// matching file instead - as this originally did - repeats identical path
-        /// rebasing work thousands of times over on a large index.
+        /// The two kinds of search want completely different things from it. Finding files
+        /// by name is cheap to do by walking, so a filename search is seeded from the shape
+        /// graph - the directories that most often produce results, rebased onto this root.
+        /// An in-file search is the expensive case, because the fallback is re-reading every
+        /// candidate file, so it additionally seeds from recorded content evidence.
+        ///
+        /// Either way each directory is expanded exactly once at its best score; expanding
+        /// per matching file repeats identical path rebasing work thousands of times over.
         /// </summary>
         private void UseIndexForFilenameSearch()
         {
@@ -257,35 +268,28 @@ namespace CeeFind.BetterQueue
 
             bool needInsideDetail = insideFileFilter.Count > 0;
 
-            for (int i = 0; i < FileNameFilters.Length; i++)
+            Seed(bestScoreByVertex, stuff.GetShapeSeedVertexes(ShapeSeedLimit), BASE_SCORE * 10);
+
+            foreach (string filenameFilter in FileNameFilters)
             {
-                string filenameFilter = FileNameFilters[i];
+                // Directories where this exact filter has previously succeeded.
+                Accumulate(bestScoreByVertex, stuff.GetThingsForRegex(filenameFilter, needInsideDetail));
+            }
 
-                if (!needInsideDetail &&
-                    stuff.TryGetCandidateVertexesForExtension(
-                        filenameFilter, out List<string> vertexNames, out long matchingThings))
+            // Content evidence: where these in-file searches have matched before. A direct
+            // seek, and the reason the index exists - the alternative is re-reading every
+            // candidate file. Resolved once for the search, not once per filename filter.
+            if (needInsideDetail)
+            {
+                foreach (KeyValuePair<string, DateTime> hit in
+                         stuff.GetContentSeedVertexes(insideFileFilter, InsideFileFilterRegex))
                 {
-                    // Directories known to hold this extension at all.
-                    Seed(bestScoreByVertex, vertexNames, AdjustScoreForRarity(INDEX_LOOKUP_SCORE, matchingThings));
-
-                    // Directories where this exact filter has previously succeeded. A
-                    // smaller, more specific set, so rarity adjustment scores it higher.
-                    if (stuff.TryGetCandidateVertexesForRegex(
-                            filenameFilter, out List<string> exactVertexes, out long exactCount))
+                    double contentScore = BoostScoreBasedOnDate(INDEX_LOOKUP_SCORE, hit.Value);
+                    if (!bestScoreByVertex.TryGetValue(hit.Key, out double existing) || contentScore > existing)
                     {
-                        Seed(bestScoreByVertex, exactVertexes, AdjustScoreForRarity(INDEX_LOOKUP_SCORE, exactCount));
+                        bestScoreByVertex[hit.Key] = contentScore;
                     }
-
-                    continue;
                 }
-
-                Accumulate(
-                    bestScoreByVertex,
-                    stuff.GetThingsForRegex(filenameFilter, IndexCandidateLimit, needInsideDetail));
-                Accumulate(
-                    bestScoreByVertex,
-                    stuff.FindThingsMatching(
-                        filenameFilter, FileNameFilterRegex[i], IndexCandidateLimit, needInsideDetail));
             }
 
             foreach (KeyValuePair<string, double> candidate in bestScoreByVertex)
@@ -404,8 +408,14 @@ namespace CeeFind.BetterQueue
                 return;
             }
 
-            stuff.EnsurePathsLoaded(vertex);
-            if (vertex.AbsolutePaths == null)
+            // Seeding reads only the locations it can actually use: those already under this
+            // root, then the strongest evidence. Loading every remembered location for every
+            // seeded vertex cost tens of thousands of rows per search for candidates that
+            // were never going to be probed.
+            List<(string Path, int Finds)> seedPaths =
+                stuff.GetSeedPaths(vertex.Name, this.RootDirectory.FullName, RebaseAttemptsPerVertex);
+
+            if (seedPaths.Count == 0)
             {
                 return;
             }
@@ -415,9 +425,9 @@ namespace CeeFind.BetterQueue
             // needs no scheduled sweep.
             List<string> deadPaths = null;
 
-            foreach (string path in vertex.AbsolutePaths.Keys.ToList())
+            foreach ((string path, int _) in seedPaths)
             {
-                // Simple case: the path is a subdirectory of the root
+                // Simple case: the path is already under this root - one probe, exact.
                 if (path.Contains(this.RootDirectory.FullName, StringComparison.OrdinalIgnoreCase))
                 {
                     if (!DirectoryExists(path))
@@ -427,37 +437,37 @@ namespace CeeFind.BetterQueue
                     }
 
                     score = QueueUpVertex(score, vertex, path);
+                    continue;
                 }
-                // Complex case: the path isn't a subdirectory of the root
-                else
+
+                // Complex case: rebase a location remembered from another codebase onto this
+                // root. This is the cross-codebase shape match, and the expensive part, so
+                // the candidate set reaching it is already bounded.
+                string[] pathParts = path.Split(separator);
+
+                for (int i = 1; i < pathParts.Length; i++)
                 {
-                    string[] pathParts = path.Split(separator);
-
-                    for (int i = 1; i < pathParts.Length; i++)
+                    StringBuilder testPath = new StringBuilder();
+                    testPath.Append(RootDirectory.FullName);
+                    for (int j = i; j < pathParts.Length; j++)
                     {
-                        StringBuilder testPath = new StringBuilder();
-                        testPath.Append(RootDirectory.FullName);
-                        for (int j = i; j < pathParts.Length; j++)
-                        {
-                            testPath.Append(separator);
-                            testPath.Append(pathParts[j]);
-                        }
+                        testPath.Append(separator);
+                        testPath.Append(pathParts[j]);
+                    }
 
-                        string proposedPath = testPath.ToString();
-                        if (DirectoryExists(proposedPath))
-                        {
-                            score = QueueUpVertex(score, vertex, proposedPath);
-                            break;
-                        }
+                    string proposedPath = testPath.ToString();
+                    if (DirectoryExists(proposedPath))
+                    {
+                        score = QueueUpVertex(score, vertex, proposedPath);
+                        break;
                     }
                 }
             }
-
             if (deadPaths != null)
             {
                 foreach (string dead in deadPaths)
                 {
-                    stuff.ForgetLocation(vertex, dead);
+                    stuff.ForgetLocationDirect(vertex, dead);
                 }
             }
         }
