@@ -701,7 +701,9 @@ namespace CeeFind
                     stuff.RecordFindLocation(directory.Vertex, directory.Directory.FullName, DateTime.UtcNow);
                 }
 
-                queue.EnqueueSubfolder(directory.Directory, directory.Directory.GetDirectories());
+                queue.EnqueueSubfolder(
+                    directory.Directory,
+                    GetSubdirectories(directory.Directory, rootDirectory, metrics));
 
                 // this part finds directories
                 if (metrics.Settings.SearchInFiles ? false : !metrics.Settings.SearchFilesOnly)
@@ -719,6 +721,49 @@ namespace CeeFind
             }
             EndSearchStatistics(metrics, sw, lastItemFound);
             return results;
+        }
+
+        /// <summary>
+        /// Mirrors the protection already applied to GetFiles. Enumerating subdirectories
+        /// fails on exactly the same conditions - a protected folder such as System Volume
+        /// Information, or a directory removed mid-walk - and left unguarded a single
+        /// unreadable directory aborted the whole search instead of being skipped.
+        /// </summary>
+        private static DirectoryInfo[] GetSubdirectories(
+            DirectoryInfo directory, DirectoryInfo rootDirectory, Metrics metrics)
+        {
+            try
+            {
+                return directory.GetDirectories();
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return Array.Empty<DirectoryInfo>();
+            }
+            catch (UnauthorizedAccessException)
+            {
+                if (metrics.Settings.IsVerbose)
+                {
+                    string relativePath = DirectoryUtils.GetRelativePath(rootDirectory, directory.FullName);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"Unauthorized: {relativePath}");
+                    Console.ResetColor();
+                }
+
+                return Array.Empty<DirectoryInfo>();
+            }
+            catch (IOException e)
+            {
+                if (metrics.Settings.IsVerbose)
+                {
+                    string relativePath = DirectoryUtils.GetRelativePath(rootDirectory, directory.FullName);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"{e.Message}: {relativePath}");
+                    Console.ResetColor();
+                }
+
+                return Array.Empty<DirectoryInfo>();
+            }
         }
 
         private static void EndSearchStatistics(Metrics metrics, Stopwatch sw, long lastItemFound)
