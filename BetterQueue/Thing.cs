@@ -21,7 +21,9 @@ namespace CeeFind.BetterQueue
 
         public Thing()
         {
-
+            Regexes = new Dictionary<string, DateTime>();
+            FoundStrings = new Dictionary<string, DateTime>();
+            VertexNames = new List<string>();
         }
 
         public Thing(List<string> insideRegex, List<string> insideCapture, String filename, String vertexName)

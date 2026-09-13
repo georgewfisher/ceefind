@@ -1,4 +1,4 @@
-﻿using CeeFind.Utils;
+using CeeFind.Utils;
 
 using System;
 using System.Collections.Generic;
@@ -25,8 +25,24 @@ namespace CeeFind.BetterQueue
         private char separator;
         private PriorityQueue<QueuedDirectory, double> queue;
 
+        /// <summary>
+        /// Memoises directory probes made while rebasing remembered paths onto this root.
+        /// Remembered locations share suffixes heavily - every repo with a 'src' proposes the
+        /// same candidate - so without this the same handful of probes is repeated hundreds
+        /// of times per search.
+        /// </summary>
+        private readonly Dictionary<string, bool> directoryExists =
+            new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
         private readonly long INDEX_LOOKUP_SCORE = 1000000;
         private readonly long BASE_SCORE = 100;
+
+        /// <summary>
+        /// Upper bound on index candidates considered per filter. The index is a heuristic
+        /// accelerator - anything beyond this is still reached by the ordinary walk - so
+        /// capping it keeps startup bounded no matter how large the index grows.
+        /// </summary>
+        private const int IndexCandidateLimit = 2000;
 
         public CeeFindQueue(
             char separator,
@@ -114,12 +130,12 @@ namespace CeeFind.BetterQueue
                     continue;
                 }
 
-                stuff.Vertexes.TryGetValue(subfolder.Name, out Vertex vertex);
+                stuff.TryGetVertex(subfolder.Name, out Vertex vertex);
                 double score = BASE_SCORE;
                 if (vertex == null)
                 {
                     vertex = new Vertex(subfolder.Name);
-                    stuff.Vertexes.Add(subfolder.Name, vertex);
+                    stuff.AddVertex(vertex);
                 }
 
                 score = GenerateScore(vertex, vertex, score, 0);
@@ -149,7 +165,7 @@ namespace CeeFind.BetterQueue
 
         private void UpdateAdjacents(int distance, QueuedDirectory current, Vertex start)
         {
-            if (stuff.Vertexes.TryGetValue(current.Directory.Name, out Vertex other))
+            if (stuff.TryGetVertex(current.Directory.Name, out Vertex other))
             {
                 Vertex.UpdateAdjacents(distance, other, start);
                 Vertex.UpdateAdjacents(-distance, start, other);
@@ -171,6 +187,7 @@ namespace CeeFind.BetterQueue
             while (qi.IsVisited || (done.ContainsKey(qi.Id) && done[qi.Id].IsVisited));
 
             qi.Vertex.Visits++;
+            qi.Vertex.IsDirty = true;
             qi.IsVisited = true;
             done.Add(qi.Id, qi);
             return qi;
@@ -189,7 +206,7 @@ namespace CeeFind.BetterQueue
             {
                 foreach (Edge adjacent in vertex.Adjacents.Values)
                 {
-                    if (stuff.Vertexes.TryGetValue(adjacent.VertexName, out Vertex subVertex))
+                    if (stuff.TryGetVertex(adjacent.VertexName, out Vertex subVertex))
                     {
                         score = AdjustScoreForFrequency(GenerateScore(origin, subVertex, BASE_SCORE, depth + 1), Math.Abs(adjacent.RelativePosition.Min()));
                     }
@@ -200,15 +217,18 @@ namespace CeeFind.BetterQueue
             {
                 score = vertex.LastFindCount.Count > 0 ? AdjustScoreForRarity(score, vertex.LastFindCount.Average()) : score;
             }
-            if (vertex.AbsolutePaths != null)
+            if (vertex.PathCount > 0)
             {
-                score = AdjustScoreForRarity(score, vertex.AbsolutePaths.Count);
+                score = AdjustScoreForRarity(score, vertex.PathCount);
             }
-            if (vertex.LastFinds != null)
+            if (vertex.FindCount > 0)
             {
-                score = AdjustScoreForFrequency(score, vertex.LastFinds.Count);
-                score = vertex.LastFinds.Count > 0 ? AdjustScoreForFrequency(score, vertex.Visits / vertex.LastFinds.Count) : 1.0 / vertex.Visits;
-                score = vertex.LastFinds.Any() ? BoostScoreBasedOnDate(score, vertex.LastFinds.Last()) : score;
+                score = AdjustScoreForFrequency(score, vertex.FindCount);
+                score = AdjustScoreForFrequency(score, (double)vertex.Visits / vertex.FindCount);
+                if (vertex.LastFindUtc.HasValue)
+                {
+                    score = BoostScoreBasedOnDate(score, vertex.LastFindUtc.Value);
+                }
             }
             return score;
         }
@@ -222,26 +242,121 @@ namespace CeeFind.BetterQueue
             this.preQueue.Clear();
         }
 
+        /// <summary>
+        /// Seeds the queue from the index.
+        ///
+        /// Candidate files are resolved to the set of directories worth visiting, and each
+        /// of those directories is expanded exactly once at its best score. Expanding per
+        /// matching file instead - as this originally did - repeats identical path
+        /// rebasing work thousands of times over on a large index.
+        /// </summary>
         private void UseIndexForFilenameSearch()
         {
+            Dictionary<string, double> bestScoreByVertex =
+                new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+
+            bool needInsideDetail = insideFileFilter.Count > 0;
+
             for (int i = 0; i < FileNameFilters.Length; i++)
             {
                 string filenameFilter = FileNameFilters[i];
-                if (stuff.RegexesToThings.ContainsKey(filenameFilter))
+
+                if (!needInsideDetail &&
+                    stuff.TryGetCandidateVertexesForExtension(
+                        filenameFilter, out List<string> vertexNames, out long matchingThings))
                 {
-                    // This exact regex has been used before
-                    QueueUpThing(stuff.RegexesToThings[filenameFilter], INDEX_LOOKUP_SCORE);
+                    // Directories known to hold this extension at all.
+                    Seed(bestScoreByVertex, vertexNames, AdjustScoreForRarity(INDEX_LOOKUP_SCORE, matchingThings));
+
+                    // Directories where this exact filter has previously succeeded. A
+                    // smaller, more specific set, so rarity adjustment scores it higher.
+                    if (stuff.TryGetCandidateVertexesForRegex(
+                            filenameFilter, out List<string> exactVertexes, out long exactCount))
+                    {
+                        Seed(bestScoreByVertex, exactVertexes, AdjustScoreForRarity(INDEX_LOOKUP_SCORE, exactCount));
+                    }
+
+                    continue;
                 }
 
-                // Something was found that matches this regex
-                foreach (string search in stuff.Things.Keys)
+                Accumulate(
+                    bestScoreByVertex,
+                    stuff.GetThingsForRegex(filenameFilter, IndexCandidateLimit, needInsideDetail));
+                Accumulate(
+                    bestScoreByVertex,
+                    stuff.FindThingsMatching(
+                        filenameFilter, FileNameFilterRegex[i], IndexCandidateLimit, needInsideDetail));
+            }
+
+            foreach (KeyValuePair<string, double> candidate in bestScoreByVertex)
+            {
+                QueueUpVertex(candidate.Key, candidate.Value);
+            }
+        }
+
+        private static void Seed(Dictionary<string, double> bestScoreByVertex, List<string> vertexNames, double score)
+        {
+            foreach (string vertexName in vertexNames)
+            {
+                if (!bestScoreByVertex.TryGetValue(vertexName, out double existing) || score > existing)
                 {
-                    if (FileNameFilterRegex[i].IsMatch(search))
+                    bestScoreByVertex[vertexName] = score;
+                }
+            }
+        }
+
+        private void Accumulate(Dictionary<string, double> bestScoreByVertex, List<Thing> things)
+        {
+            if (things.Count == 0)
+            {
+                return;
+            }
+
+            double adjustedScore = AdjustScoreForRarity(INDEX_LOOKUP_SCORE, things.Count);
+
+            foreach (Thing thing in things)
+            {
+                double score = adjustedScore * InsideSearchFactor(thing);
+
+                foreach (string vertexName in thing.VertexNames)
+                {
+                    if (!bestScoreByVertex.TryGetValue(vertexName, out double existing) || score > existing)
                     {
-                        QueueUpThing(new List<string>() { search }, INDEX_LOOKUP_SCORE);
+                        bestScoreByVertex[vertexName] = score;
                     }
                 }
             }
+        }
+
+        private double InsideSearchFactor(Thing thing)
+        {
+            if (insideFileFilter.Count == 0)
+            {
+                return 1;
+            }
+
+            double insideSearchFactor = 1;
+
+            foreach (string insideSearchStr in insideFileFilter)
+            {
+                if (thing.Regexes.TryGetValue(insideSearchStr, out DateTime found))
+                {
+                    insideSearchFactor = BoostScoreBasedOnDate(insideSearchFactor, found);
+                }
+            }
+
+            foreach (KeyValuePair<string, DateTime> foundString in thing.FoundStrings)
+            {
+                foreach (Regex insideSearch in InsideFileFilterRegex)
+                {
+                    if (insideSearch.IsMatch(foundString.Key))
+                    {
+                        insideSearchFactor = BoostScoreBasedOnDate(insideSearchFactor, foundString.Value);
+                    }
+                }
+            }
+
+            return insideSearchFactor;
         }
 
         private void QueueUpVertex(List<string> list, double score)
@@ -256,44 +371,11 @@ namespace CeeFind.BetterQueue
 
         private static double AdjustScoreForRarity(double score, double count)
         {
-            return score / Math.Log(count + 1);
-        }
-
-        private void QueueUpThing(List<string> things, double score)
-        {
-            double adjustedScore = AdjustScoreForRarity(score, things.Count);
-            foreach (string thing in things)
-            {
-                QueueUpThing(thing, adjustedScore);
-            }
-        }
-
-        private void QueueUpThing(string thingName, double score)
-        {
-            Thing thing = stuff.Things[thingName];
-
-            // Adjust score for any find inside file results
-            double insideSearchFactor = 1;
-            foreach (string insideSearchStr in insideFileFilter)
-            {
-                if (thing.Regexes.ContainsKey(insideSearchStr))
-                {
-                    insideSearchFactor = BoostScoreBasedOnDate(insideSearchFactor, thing.Regexes[insideSearchStr]);
-                }
-            }
-
-            foreach (string foundString in thing.FoundStrings.Keys)
-            {
-                foreach (Regex insideSearch in InsideFileFilterRegex)
-                {
-                    if (insideSearch.IsMatch(foundString))
-                    {
-                        insideSearchFactor = BoostScoreBasedOnDate(insideSearchFactor, thing.FoundStrings[foundString]);
-                    }
-                }
-            }
-
-            QueueUpVertex(thing.VertexNames, score * insideSearchFactor);
+            // Math.Log(1) is 0, so a count of zero would divide the score to Infinity and a
+            // subsequent multiply by zero would yield NaN - which silently corrupts ordering
+            // in the priority queue. Clamp instead.
+            double divisor = Math.Log(count + 1);
+            return divisor <= double.Epsilon ? score : score / divisor;
         }
 
         private static double BoostScoreBasedOnDate(double score, DateTime date)
@@ -316,41 +398,80 @@ namespace CeeFind.BetterQueue
         /// <param name="score"></param>
         private void QueueUpVertex(string vertexName, double score)
         {
-            Vertex vertex = stuff.Vertexes[vertexName];
-            if (vertex.AbsolutePaths != null)
+            // Defensive: a thing can outlive the vertex it referenced if pruning retired it.
+            if (!stuff.TryGetVertex(vertexName, out Vertex vertex))
             {
-                foreach (string path in vertex.AbsolutePaths)
-                {
-                    // Simple case: the path is a subdirectory of the root
-                    if (path.Contains(this.RootDirectory.FullName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        score = QueueUpVertex(score, vertex, path);
-                    }
-                    // Complex case: the path isn't a subdirectory of the root
-                    else
-                    {
-                        string[] pathParts = path.Split(separator);
-                        
-                        for (int i = 1; i < pathParts.Length; i++)
-                        {
-                            StringBuilder testPath = new StringBuilder();
-                            testPath.Append(RootDirectory.FullName);
-                            for (int j = i; j < pathParts.Length; j++)
-                            {
-                                testPath.Append(separator);
-                                testPath.Append(pathParts[j]);
-                            }
+                return;
+            }
 
-                            string proposedPath = testPath.ToString();
-                            if (Directory.Exists(proposedPath))
-                            {
-                                score = QueueUpVertex(score, vertex, proposedPath);
-                                break;
-                            }
+            stuff.EnsurePathsLoaded(vertex);
+            if (vertex.AbsolutePaths == null)
+            {
+                return;
+            }
+
+            // Locations that no longer exist are provably worthless at any age. We are
+            // already resolving each path here, so reclaiming them costs no extra I/O and
+            // needs no scheduled sweep.
+            List<string> deadPaths = null;
+
+            foreach (string path in vertex.AbsolutePaths.Keys.ToList())
+            {
+                // Simple case: the path is a subdirectory of the root
+                if (path.Contains(this.RootDirectory.FullName, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!DirectoryExists(path))
+                    {
+                        (deadPaths ??= new List<string>()).Add(path);
+                        continue;
+                    }
+
+                    score = QueueUpVertex(score, vertex, path);
+                }
+                // Complex case: the path isn't a subdirectory of the root
+                else
+                {
+                    string[] pathParts = path.Split(separator);
+
+                    for (int i = 1; i < pathParts.Length; i++)
+                    {
+                        StringBuilder testPath = new StringBuilder();
+                        testPath.Append(RootDirectory.FullName);
+                        for (int j = i; j < pathParts.Length; j++)
+                        {
+                            testPath.Append(separator);
+                            testPath.Append(pathParts[j]);
+                        }
+
+                        string proposedPath = testPath.ToString();
+                        if (DirectoryExists(proposedPath))
+                        {
+                            score = QueueUpVertex(score, vertex, proposedPath);
+                            break;
                         }
                     }
                 }
             }
+
+            if (deadPaths != null)
+            {
+                foreach (string dead in deadPaths)
+                {
+                    stuff.ForgetLocation(vertex, dead);
+                }
+            }
+        }
+
+        private bool DirectoryExists(string path)
+        {
+            if (directoryExists.TryGetValue(path, out bool exists))
+            {
+                return exists;
+            }
+
+            exists = Directory.Exists(path);
+            directoryExists[path] = exists;
+            return exists;
         }
 
         /// <summary>
@@ -362,10 +483,13 @@ namespace CeeFind.BetterQueue
         /// <returns></returns>
         private double QueueUpVertex(double score, Vertex vertex, string path)
         {
-            if (vertex.LastFinds != null)
+            if (vertex.FindCount > 0)
             {
-                score = BoostScoreBasedOnDate(score, vertex.LastFinds.Last());
-                score = AdjustScoreForFrequency(score, vertex.LastFinds.Count);
+                if (vertex.LastFindUtc.HasValue)
+                {
+                    score = BoostScoreBasedOnDate(score, vertex.LastFindUtc.Value);
+                }
+                score = AdjustScoreForFrequency(score, vertex.FindCount);
             }
             DirectoryInfo directory = new DirectoryInfo(path);
             QueueUpVertex(score, vertex, directory, directory.Parent.FullName.GetHashCode());

@@ -15,6 +15,10 @@
     <Copyright>Copyright (c) George Fisher</Copyright>
     <VersionPrefix>1.0.0</VersionPrefix>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- CeeFind is a short-lived CLI process, so JIT time is a visible share of every
+         invocation. Precompiling removes most of it from the startup path. -->
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <TieredPGO>true</TieredPGO>
   </PropertyGroup>
   <ItemGroup>
     <Content Include="binary_files.txt">
@@ -22,6 +26,7 @@
     </Content>
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.0" />
   </ItemGroup>

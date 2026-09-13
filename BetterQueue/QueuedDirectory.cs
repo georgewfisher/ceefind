@@ -20,16 +20,7 @@ namespace CeeFind.BetterQueue
 
         public static QueuedDirectory InitializeRoot(DirectoryInfo rootDirectory, Stuff stuff)
         {
-            Vertex v;
-            if (stuff.Vertexes.ContainsKey(rootDirectory.Name))
-            {
-                v = stuff.Vertexes[rootDirectory.Name];
-            }
-            else
-            {
-                v = new Vertex(rootDirectory.Name);
-                stuff.Vertexes.Add(v.Name, v);
-            }
+            Vertex v = stuff.GetOrAddVertex(rootDirectory.Name);
             QueuedDirectory qd = new QueuedDirectory(rootDirectory, 0, v, 0);
             qd.IsRoot = true;
             return qd;

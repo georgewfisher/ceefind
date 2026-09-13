@@ -36,16 +36,33 @@ Smart:
 
 ## Stored data
 
-CeeFind keeps its index and search history in a per-user directory:
+CeeFind keeps its index and search history in a SQLite database in a per-user directory:
 
-* Windows: `%LOCALAPPDATA%\CeeFind\`
+* Windows: `%LOCALAPPDATA%\CeeFind\index_v3.db`
 * Other platforms: `$XDG_DATA_HOME`/`~/.local/share` equivalent resolved by .NET
 
 Nothing is written next to the executable, so CeeFind works when installed to a
-read-only location such as `Program Files`. An index created by an older build that
-stored state alongside the executable is migrated automatically on first run.
+read-only location such as `Program Files`.
 
-To reset the index, delete that directory.
+The index loads progressively: directory knowledge is read by name as the search
+meets it, and only what a search actually changed is written back, in a single
+transaction. Startup cost is therefore flat as the index grows, and concurrent
+`f` invocations in different terminals no longer overwrite each other.
+
+An index from an earlier build (`state_v2.json.gz`, in either the state directory
+or beside the executable) is imported automatically on first run and then retired
+to `.imported`.
+
+To reset the index, delete the database.
+
+### What CeeFind forgets
+
+Following the "don't remember everything" principle, the index is bounded — but
+never by age. A location you found something in two years ago is exactly what you
+are least likely to remember yourself, so age is used only to *rank* results, never
+to decide what to discard. Entries are retired when they are provably invalid (the
+directory no longer exists, noticed for free during a search) or when they are
+traversal residue that never produced a result and costs nothing to rediscover.
 
 ## Usage
 

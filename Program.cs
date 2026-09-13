@@ -4,16 +4,13 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using CeeFind.Utils;
 using System.Diagnostics;
 using System.Text;
-using System.Text.Json.Serialization;
 using CeeFind.Files;
-using System.IO.Compression;
-using System.Threading.Tasks;
+using CeeFind.Storage;
 using System.Runtime.InteropServices;
 
 namespace CeeFind
@@ -28,6 +25,7 @@ namespace CeeFind
         private static ILogger<Program> log;
         private const long LARGE_FILE_SIZE = 1024 * 1024;
         private const string STATE_FILE_NAME = "state_v2.json.gz";
+        private const string INDEX_FILE_NAME = "index_v3.db";
         private static readonly object terminationLock = new object();
 
         public Program()
@@ -45,20 +43,9 @@ namespace CeeFind
                 directorySeparator = DIRECTORY_SEPARATOR_OTHER;
             }
 
-            string stateFile = Path.Combine(GetStateDirectory(), STATE_FILE_NAME);
-            MigrateLegacyState(stateFile);
-            Task<Stuff> task;
-            if (File.Exists(stateFile))
-            {
-                task = LoadHistory(stateFile);
-            }
-            else
-            {
-                task = new Task<Stuff>(
-                    () =>
-                        new Stuff());
-                task.Start();
-            }
+            string stateFile = Path.Combine(GetStateDirectory(), INDEX_FILE_NAME);
+            Stuff stuff = new Stuff(stateFile);
+            LegacyStateImporter.ImportIfPresent(stuff, GetStateDirectory());
 
             ILoggerFactory loggerFactory = LoggerFactory.Create(
                 builder => builder
@@ -211,9 +198,6 @@ namespace CeeFind
 
             Metrics metrics = new Metrics(settings, string.Join(' ', args));
 
-            // Setup complete, proceed with search
-            Stuff stuff = task.Result;
-
             bool terminationInProgress = false;
 
             Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs e)
@@ -339,87 +323,6 @@ namespace CeeFind
         }
 
         /// <summary>
-        /// Moves an index written by an older build, which stored state alongside the
-        /// executable, into the per-user state directory so history is not lost on upgrade.
-        /// </summary>
-        private static void MigrateLegacyState(string stateFile)
-        {
-            try
-            {
-                string legacyStateFile = Path.Combine(AppContext.BaseDirectory, STATE_FILE_NAME);
-                if (string.Equals(legacyStateFile, stateFile, StringComparison.OrdinalIgnoreCase))
-                {
-                    return;
-                }
-
-                if (File.Exists(legacyStateFile) && !File.Exists(stateFile))
-                {
-                    File.Copy(legacyStateFile, stateFile);
-                }
-            }
-            catch (Exception)
-            {
-                // A failed migration is not fatal; a fresh index will be built instead.
-            }
-        }
-
-        private static async Task<Stuff> LoadHistory(string stateFile)
-        {
-            Stuff stuff = null;
-            try
-            {
-                using (FileStream stream = File.Open(stateFile, FileMode.Open))
-                {
-                    using (GZipStream compressedStream = new GZipStream(stream, CompressionMode.Decompress))
-                    {
-                        ValueTask<Stuff> task = JsonSerializer.DeserializeAsync<Stuff>(compressedStream);
-                        await task;
-                        stuff = task.Result;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                // If we fail to load the state file, it might be corrupted
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"Warning: Could not load state file - {ex.Message}");
-                Console.WriteLine("Creating a new state file. Previous search history will not be available.");
-                Console.ResetColor();
-                
-                // Try to use backup if available
-                string backupFile = stateFile + ".bak";
-                if (File.Exists(backupFile))
-                {
-                    Console.WriteLine("Attempting to restore from backup...");
-                    try
-                    {
-                        using (FileStream stream = File.Open(backupFile, FileMode.Open))
-                        {
-                            using (GZipStream compressedStream = new GZipStream(stream, CompressionMode.Decompress))
-                            {
-                                ValueTask<Stuff> task = JsonSerializer.DeserializeAsync<Stuff>(compressedStream);
-                                await task;
-                                stuff = task.Result;
-                                Console.WriteLine("Successfully restored from backup.");
-                            }
-                        }
-                    }
-                    catch
-                    {
-                        Console.WriteLine("Backup restoration failed. Creating new state.");
-                        stuff = new Stuff();
-                    }
-                }
-                else
-                {
-                    stuff = new Stuff();
-                }
-            }
-            
-            return stuff ?? new Stuff();
-        }
-
-        /// <summary>
         /// Allows for a root path to be provided as part of a path filter, allowing for things like C:\myfiles\*.txt
         /// </summary>
         /// <param name="filter"></param>
@@ -453,13 +356,14 @@ namespace CeeFind
 
         private static void ShowHistory(Stuff stuff, DirectoryInfo rootDirectory)
         {
-            if (!stuff.SearchHistory.ContainsKey(rootDirectory.FullName))
+            List<Metrics> history = stuff.GetHistory(rootDirectory.FullName);
+            if (history.Count == 0)
             {
                 Console.WriteLine("No search history exists for this directory");
             }
             else
             {
-                IEnumerable<string> searchHistory = stuff.SearchHistory[rootDirectory.FullName].OrderByDescending(x => x.SearchDate).Select(x => $"{x.Args} ({HumanTime(DateTime.UtcNow.Subtract(x.SearchDate).TotalSeconds)} ago)").Distinct();
+                IEnumerable<string> searchHistory = history.OrderByDescending(x => x.SearchDate).Select(x => $"{x.Args} ({HumanTime(DateTime.UtcNow.Subtract(x.SearchDate).TotalSeconds)} ago)").Distinct();
                 foreach (String search in searchHistory)
                 {
                     Console.WriteLine(search);
@@ -496,25 +400,14 @@ namespace CeeFind
         {
             lock (terminationLock)
             {
-                stuff.Clean();
                 metrics.IsComplete = isCompleteScan;
                 metrics.Clean();
-
-                // Store the search results for the root directory
-                if (!stuff.SearchHistory.ContainsKey(rootDirectory.FullName))
-                {
-                    stuff.SearchHistory.Add(rootDirectory.FullName, new List<Metrics>());
-                }
-                stuff.SearchHistory[rootDirectory.FullName].Add(metrics);
 
                 if (metrics.Settings.WriteStateAsJson)
                 {
                     try
                     {
-                        File.WriteAllText("state.json", JsonSerializer.Serialize(stuff, new JsonSerializerOptions
-                        {
-                            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault | JsonIgnoreCondition.WhenWritingNull
-                        }));
+                        stuff.ExportJson("state.json");
                     }
                     catch (Exception ex)
                     {
@@ -532,49 +425,43 @@ namespace CeeFind
                     // either complete, or early termination
                     if (isFinished || (isEarlyTerminated && DateTime.UtcNow.Subtract(metrics.SearchDate).TotalSeconds > 5))
                     {
+                        stuff.AddHistory(rootDirectory.FullName, metrics);
+
                         try
                         {
-                            // Write to a temporary file first
-                            string tempStateFile = stateFile + ".temp";
-                            
-                            using (FileStream stream = File.Open(tempStateFile, FileMode.Create))
-                            {
-                                using (GZipStream compressedStream = new GZipStream(stream, CompressionMode.Compress))
-                                {
-                                    Task task = JsonSerializer.SerializeAsync(compressedStream, stuff, new JsonSerializerOptions
-                                    {
-                                        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault | JsonIgnoreCondition.WhenWritingNull
-                                    });
-                                    task.Wait(); // Make sure serialization completes
-                                }
-                            }
-                            
-                            // After successful write, replace the original file
-                            if (File.Exists(stateFile))
-                            {
-                                string backupFile = stateFile + ".bak";
-                                // Keep a backup of the previous state file just in case
-                                if (File.Exists(backupFile))
-                                {
-                                    File.Delete(backupFile);
-                                }
-                                File.Move(stateFile, backupFile);
-                            }
-                            
-                            File.Move(tempStateFile, stateFile);
+                            // Only what this search actually touched is written, in one
+                            // transaction - not the whole graph as the old format required.
+                            stuff.Flush();
                         }
                         catch (Exception ex)
                         {
                             if (metrics.Settings.IsVerbose)
                             {
                                 Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine($"Error saving state file: {ex.Message}");
+                                Console.WriteLine($"Error saving index: {ex.Message}");
+                                Console.ResetColor();
+                            }
+                        }
+
+                        try
+                        {
+                            // Guarded deliberately: enforcing retention budgets must never be
+                            // able to crash a search or block the index from being persisted.
+                            stuff.Prune();
+                        }
+                        catch (Exception ex)
+                        {
+                            if (metrics.Settings.IsVerbose)
+                            {
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine($"Error pruning index: {ex.Message}");
                                 Console.ResetColor();
                             }
                         }
                     }
                 }
 
+                stuff.Dispose();
                 Environment.Exit(0);
             }
         }
@@ -753,11 +640,7 @@ namespace CeeFind
 
                         if (!metrics.Settings.SearchInFiles)
                         {
-                            if (directory.Vertex.LastFinds == null)
-                            {
-                                directory.Vertex.LastFinds = new List<DateTime>();
-                            }
-                            directory.Vertex.LastFinds.Add(DateTime.UtcNow);
+                            directory.Vertex.RecordFind(DateTime.UtcNow);
                             if (queue.FileNameFilters.Length != 0)
                             {
                                 verticesWhereObjFound.Add(directory.Vertex);
@@ -816,17 +699,9 @@ namespace CeeFind
                         directory.Vertex.LastFindCount = new Histogram();
                     }
                     directory.Vertex.LastFindCount.Add(resultCount);
-                    
+
                     // Remember directories where something was found (for index)
-                    string fullname = directory.Directory.FullName;
-                    if (directory.Vertex.AbsolutePaths == null)
-                    {
-                        directory.Vertex.AbsolutePaths = new HashSet<string>();
-                    }
-                    if (!directory.Vertex.AbsolutePaths.Contains(fullname))
-                    {
-                        directory.Vertex.AbsolutePaths.Add(fullname);
-                    }
+                    stuff.RecordFindLocation(directory.Vertex, directory.Directory.FullName, DateTime.UtcNow);
                 }
 
                 queue.EnqueueSubfolder(directory.Directory, directory.Directory.GetDirectories());
@@ -859,9 +734,10 @@ namespace CeeFind
         private static string ProgressReport(Stuff stuff, Metrics metrics, DirectoryInfo rootDirectory, Stopwatch sw)
         {
             string mode = "Inspected";
-            if (stuff.SearchHistory.ContainsKey(rootDirectory.FullName))
+            List<Metrics> history = stuff.GetHistory(rootDirectory.FullName);
+            if (history.Count > 0)
             {
-                List<Metrics> metricsFromDir = stuff.SearchHistory[rootDirectory.FullName].Where(m => m.IsComplete).ToList();
+                List<Metrics> metricsFromDir = history.Where(m => m.IsComplete).ToList();
 
                 if (!metrics.Settings.SearchInFiles)
                 {
@@ -1085,12 +961,7 @@ namespace CeeFind
 
             if (((IEnumerable<bool>)allFound).All<bool>((bool a) => a))
             {
-                if (currentPath.Vertex.LastFinds == null)
-                {
-                    currentPath.Vertex.LastFinds = new List<DateTime>();
-                }
-
-                currentPath.Vertex.LastFinds.Add(DateTime.UtcNow);
+                currentPath.Vertex.RecordFind(DateTime.UtcNow);
 
                 if (metrics.Settings.SearchFilesOnly)
                 {
