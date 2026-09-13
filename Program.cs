@@ -4,7 +4,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
@@ -28,6 +27,7 @@ namespace CeeFind
         private static HashSet<string> binaryFiles;
         private static ILogger<Program> log;
         private const long LARGE_FILE_SIZE = 1024 * 1024;
+        private const string STATE_FILE_NAME = "state_v2.json.gz";
         private static readonly object terminationLock = new object();
 
         public Program()
@@ -45,8 +45,8 @@ namespace CeeFind
                 directorySeparator = DIRECTORY_SEPARATOR_OTHER;
             }
 
-            string assemblyLocation = Assembly.GetExecutingAssembly().Location;
-            string stateFile = Path.Combine(Path.GetDirectoryName(assemblyLocation), "state_v2.json.gz");
+            string stateFile = Path.Combine(GetStateDirectory(), STATE_FILE_NAME);
+            MigrateLegacyState(stateFile);
             Task<Stuff> task;
             if (File.Exists(stateFile))
             {
@@ -67,8 +67,7 @@ namespace CeeFind
             log = loggerFactory.CreateLogger<Program>();
             string rootDirectoryString = Directory.GetCurrentDirectory();
             binaryFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            string binaryPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            foreach (string extension in File.ReadAllLines(Path.Combine(binaryPath, "binary_files.txt")))
+            foreach (string extension in File.ReadAllLines(Path.Combine(AppContext.BaseDirectory, "binary_files.txt")))
             {
                 binaryFiles.Add(extension);
             }
@@ -307,6 +306,61 @@ namespace CeeFind
             }
 
             Finish(stuff, rootDirectory, false, !queue.IsMore(), true, stateFile, metrics);
+        }
+
+        /// <summary>
+        /// Returns the per-user directory used to persist the index. Writing next to the
+        /// executable fails when CeeFind is installed to a read-only location such as
+        /// Program Files or an MSIX package root.
+        /// </summary>
+        private static string GetStateDirectory()
+        {
+            string root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (string.IsNullOrEmpty(root))
+            {
+                root = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            }
+
+            if (string.IsNullOrEmpty(root))
+            {
+                return AppContext.BaseDirectory;
+            }
+
+            string stateDirectory = Path.Combine(root, "CeeFind");
+            try
+            {
+                Directory.CreateDirectory(stateDirectory);
+                return stateDirectory;
+            }
+            catch (Exception)
+            {
+                return AppContext.BaseDirectory;
+            }
+        }
+
+        /// <summary>
+        /// Moves an index written by an older build, which stored state alongside the
+        /// executable, into the per-user state directory so history is not lost on upgrade.
+        /// </summary>
+        private static void MigrateLegacyState(string stateFile)
+        {
+            try
+            {
+                string legacyStateFile = Path.Combine(AppContext.BaseDirectory, STATE_FILE_NAME);
+                if (string.Equals(legacyStateFile, stateFile, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                if (File.Exists(legacyStateFile) && !File.Exists(stateFile))
+                {
+                    File.Copy(legacyStateFile, stateFile);
+                }
+            }
+            catch (Exception)
+            {
+                // A failed migration is not fatal; a fresh index will be built instead.
+            }
         }
 
         private static async Task<Stuff> LoadHistory(string stateFile)

@@ -1,47 +1,27 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
-    <Platform Condition=" '$(Platform)' == '' ">x86</Platform>
     <AssemblyName>ceefind</AssemblyName>
     <OutputType>Exe</OutputType>
     <RootNamespace>CeeFind</RootNamespace>
-    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
-    <Platforms>AnyCPU;x64</Platforms>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <Platforms>AnyCPU;x64;ARM64</Platforms>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <Product>CeeFind</Product>
+    <AssemblyTitle>CeeFind</AssemblyTitle>
+    <Description>Smart, all-in-one find tool with a simple index.</Description>
+    <Company>George Fisher</Company>
+    <Authors>George Fisher</Authors>
+    <Copyright>Copyright (c) George Fisher</Copyright>
+    <VersionPrefix>1.0.0</VersionPrefix>
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x86' ">
-    <PlatformTarget>x64</PlatformTarget>
-  </PropertyGroup>
-  <ItemGroup>
-    <Compile Update="Properties\AssemblyInfo.cs">
-      <AutoGen>false</AutoGen>
-      <DesignTimeSharedInput>false</DesignTimeSharedInput>
-    </Compile>
-    <Compile Update="SearchResult.cs">
-      <AutoGen>false</AutoGen>
-      <DesignTimeSharedInput>false</DesignTimeSharedInput>
-    </Compile>
-    <Compile Update="SimpleMatchCollection.cs">
-      <AutoGen>false</AutoGen>
-      <DesignTimeSharedInput>false</DesignTimeSharedInput>
-    </Compile>
-    <Compile Update="SimpleMatch.cs">
-      <AutoGen>false</AutoGen>
-      <DesignTimeSharedInput>false</DesignTimeSharedInput>
-    </Compile>
-    <Compile Update="Program.cs">
-      <AutoGen>false</AutoGen>
-      <DesignTimeSharedInput>false</DesignTimeSharedInput>
-    </Compile>
-  </ItemGroup>
   <ItemGroup>
     <Content Include="binary_files.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.DotNet.UpgradeAssistant.Extensions.Default.Analyzers" Version="0.3.330701">
-      <PrivateAssets>all</PrivateAssets>
-    </PackageReference>
     <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.0" />
   </ItemGroup>

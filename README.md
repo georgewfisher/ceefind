@@ -22,19 +22,30 @@ Smart:
 
 ## Installation
 
-1. Build .sln Release x64 using msbuild.
+1. Build Release using the .NET SDK (https://dotnet.microsoft.com/en-us/download):
 
-	a. Install msbuild on Windows: `winget install --id Microsoft.VisualStudio.2022.BuildTools --silent --accept-package-agreements --accept-source-agreements`
+	`dotnet build CeeFind.sln -c Release -p:Platform=x64`
 
-	b. Install .NET SDK: https://dotnet.microsoft.com/en-us/download/visual-studio-sdks
+	Or produce a standalone executable with no .NET runtime dependency:
 
-        c. Install nuget.exe
+	`dotnet publish CeeFind.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish`
 
-	d. Run: `nuget restore`
+	Replace `win-x64` with `win-arm64` for Arm64 devices.
 
-	e. Build: `msbuild CeeFind.sln`
+2. Add the output directory to your `PATH` environment variable.
 
-2. Add release bin directory to path environment variable
+## Stored data
+
+CeeFind keeps its index and search history in a per-user directory:
+
+* Windows: `%LOCALAPPDATA%\CeeFind\`
+* Other platforms: `$XDG_DATA_HOME`/`~/.local/share` equivalent resolved by .NET
+
+Nothing is written next to the executable, so CeeFind works when installed to a
+read-only location such as `Program Files`. An index created by an older build that
+stored state alongside the executable is migrated automatically on first run.
+
+To reset the index, delete that directory.
 
 ## Usage
 
