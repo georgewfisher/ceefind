@@ -49,10 +49,6 @@ meets it, and only what a search actually changed is written back, in a single
 transaction. Startup cost is therefore flat as the index grows, and concurrent
 `f` invocations in different terminals no longer overwrite each other.
 
-An index from an earlier build (`state_v2.json.gz`, in either the state directory
-or beside the executable) is imported automatically on first run and then retired
-to `.imported`.
-
 To reset the index, delete the database.
 
 ### What CeeFind forgets

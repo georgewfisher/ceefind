@@ -10,7 +10,6 @@ using CeeFind.Utils;
 using System.Diagnostics;
 using System.Text;
 using CeeFind.Files;
-using CeeFind.Storage;
 using System.Runtime.InteropServices;
 
 namespace CeeFind
@@ -24,7 +23,6 @@ namespace CeeFind
         private static HashSet<string> binaryFiles;
         private static ILogger<Program> log;
         private const long LARGE_FILE_SIZE = 1024 * 1024;
-        private const string STATE_FILE_NAME = "state_v2.json.gz";
         private const string INDEX_FILE_NAME = "index_v3.db";
         private static readonly object terminationLock = new object();
 
@@ -45,7 +43,6 @@ namespace CeeFind
 
             string stateFile = Path.Combine(GetStateDirectory(), INDEX_FILE_NAME);
             Stuff stuff = new Stuff(stateFile);
-            LegacyStateImporter.ImportIfPresent(stuff, GetStateDirectory());
 
             ILoggerFactory loggerFactory = LoggerFactory.Create(
                 builder => builder

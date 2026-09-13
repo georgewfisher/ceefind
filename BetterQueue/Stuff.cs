@@ -450,27 +450,6 @@ namespace CeeFind.BetterQueue
             return things;
         }
 
-        /// <summary>
-        /// Bulk entry point used when importing a pre-SQLite index. Preserves the full
-        /// vertex list of a thing, which the incremental AddThing path does not need to.
-        /// </summary>
-        internal void ImportThing(Thing thing, IEnumerable<string> filenameRegexes)
-        {
-            thingCache[thing.Filename] = thing;
-            dirtyThings[thing.Filename] = thing;
-
-            foreach (string filenameRegex in filenameRegexes)
-            {
-                if (!dirtyRegexLinks.TryGetValue(filenameRegex, out HashSet<string> links))
-                {
-                    links = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    dirtyRegexLinks[filenameRegex] = links;
-                }
-
-                links.Add(thing.Filename);
-            }
-        }
-
         internal void AddThing(
             string filename,
             string[] filenameRegexes,
@@ -944,13 +923,6 @@ ON CONFLICT(filename) DO UPDATE SET
             }
 
             return due;
-        }
-
-        internal void Checkpoint()
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
-            command.ExecuteNonQuery();
         }
 
         private long ScalarCount(SqliteTransaction transaction, string sql)
