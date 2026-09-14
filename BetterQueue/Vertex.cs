@@ -38,6 +38,16 @@ namespace CeeFind.BetterQueue
         /// </summary>
         public int FindCount { get; set; }
 
+        /// <summary>
+        /// Directories visited anywhere beneath this one, and how many of those produced a
+        /// result. Barrenness is structural: vendored and generated trees have thousands of
+        /// uniquely-named children, so nothing is ever learned about them individually -
+        /// but a great deal can be learned about the subtree that contains them.
+        /// </summary>
+        public long SubtreeVisits { get; set; }
+
+        public long SubtreeFinds { get; set; }
+
         public DateTime? LastFindUtc { get; set; }
 
         public Histogram LastFindCount { get; set; }
@@ -107,6 +117,28 @@ namespace CeeFind.BetterQueue
         {
             FindCount++;
             LastFindUtc = utcNow;
+            IsDirty = true;
+        }
+
+        /// <summary>
+        /// True when this subtree has been explored substantially and has never produced a
+        /// result. Zero finds is the discriminator rather than a ratio: one result anywhere
+        /// beneath a directory is enough to stop treating it as noise.
+        /// </summary>
+        internal bool IsProvenBarren(long minimumEvidence)
+        {
+            return SubtreeFinds == 0 && SubtreeVisits >= minimumEvidence;
+        }
+
+        internal void RecordSubtreeVisit()
+        {
+            SubtreeVisits++;
+            IsDirty = true;
+        }
+
+        internal void RecordSubtreeFind()
+        {
+            SubtreeFinds++;
             IsDirty = true;
         }
 

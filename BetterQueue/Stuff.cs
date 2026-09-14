@@ -101,7 +101,8 @@ namespace CeeFind.BetterQueue
 
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
-                "SELECT name, visits, find_count, last_find_utc, histogram_json, adjacents_json, path_count " +
+                "SELECT name, visits, find_count, last_find_utc, histogram_json, adjacents_json, path_count, " +
+                "subtree_visits, subtree_finds " +
                 "FROM vertex WHERE name = $name LIMIT 1;";
             command.Parameters.AddWithValue("$name", name);
 
@@ -125,6 +126,8 @@ namespace CeeFind.BetterQueue
                     ? null
                     : JsonSerializer.Deserialize<Dictionary<string, Edge>>(reader.GetString(5), JsonOptions),
                 PathCount = reader.GetInt32(6),
+                SubtreeVisits = reader.GetInt64(7),
+                SubtreeFinds = reader.GetInt64(8),
                 ArePathsLoaded = false,
                 IsDirty = false,
             };
@@ -649,15 +652,17 @@ namespace CeeFind.BetterQueue
             using SqliteCommand command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = @"
-INSERT INTO vertex (name, visits, find_count, last_find_utc, histogram_json, adjacents_json, path_count)
-VALUES ($name, $visits, $findCount, $lastFind, $histogram, $adjacents, $pathCount)
+INSERT INTO vertex (name, visits, find_count, last_find_utc, histogram_json, adjacents_json, path_count, subtree_visits, subtree_finds)
+VALUES ($name, $visits, $findCount, $lastFind, $histogram, $adjacents, $pathCount, $subtreeVisits, $subtreeFinds)
 ON CONFLICT(name) DO UPDATE SET
     visits         = excluded.visits,
     find_count     = excluded.find_count,
     last_find_utc  = excluded.last_find_utc,
     histogram_json = excluded.histogram_json,
     adjacents_json = excluded.adjacents_json,
-    path_count     = excluded.path_count;";
+    path_count     = excluded.path_count,
+    subtree_visits = excluded.subtree_visits,
+    subtree_finds  = excluded.subtree_finds;";
 
             command.Parameters.AddWithValue("$name", vertex.Name);
             command.Parameters.AddWithValue("$visits", vertex.Visits);
@@ -676,6 +681,8 @@ ON CONFLICT(name) DO UPDATE SET
                     ? (object)DBNull.Value
                     : JsonSerializer.Serialize(vertex.Adjacents, JsonOptions));
             command.Parameters.AddWithValue("$pathCount", vertex.PathCount);
+            command.Parameters.AddWithValue("$subtreeVisits", vertex.SubtreeVisits);
+            command.Parameters.AddWithValue("$subtreeFinds", vertex.SubtreeFinds);
 
             command.ExecuteNonQuery();
         }

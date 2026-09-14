@@ -15,7 +15,7 @@ namespace CeeFind.Storage
     /// </summary>
     internal static class IndexSchema
     {
-        internal const int SchemaVersion = 5;
+        internal const int SchemaVersion = 6;
 
         internal static SqliteConnection Open(string databasePath)
         {
@@ -87,6 +87,8 @@ CREATE TABLE IF NOT EXISTS vertex (
     name            TEXT PRIMARY KEY COLLATE NOCASE,
     visits          INTEGER NOT NULL DEFAULT 0,
     find_count      INTEGER NOT NULL DEFAULT 0,
+    subtree_visits  INTEGER NOT NULL DEFAULT 0,
+    subtree_finds   INTEGER NOT NULL DEFAULT 0,
     last_find_utc   INTEGER NULL,
     histogram_json  TEXT NULL,
     adjacents_json  TEXT NULL,

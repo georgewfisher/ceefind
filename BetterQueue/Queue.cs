@@ -57,6 +57,24 @@ namespace CeeFind.BetterQueue
         /// </summary>
         private const int MaxAdjacentsConsidered = 16;
 
+        /// <summary>
+        /// How much fruitless exploration of a subtree is required before it is treated as
+        /// noise. High enough that a directory merely passed through once is not condemned.
+        /// </summary>
+        private const long BarrenSubtreeEvidence = 25;
+
+        /// <summary>
+        /// Depth at which the structural penalty begins, and how sharply it grows.
+        /// </summary>
+        private const int ShallowDepth = 4;
+        private const double DepthPenalty = 0.15;
+
+        /// <summary>
+        /// Safety bound on the ancestor walk, which should be short but is driven by
+        /// on-disk structure.
+        /// </summary>
+        private const int MaxAncestorWalk = 64;
+
         public CeeFindQueue(
             char separator,
             Stuff stuff,
@@ -129,6 +147,16 @@ namespace CeeFind.BetterQueue
         public void EnqueueSubfolder(DirectoryInfo parent, DirectoryInfo[] subfolders)
         {
             int parentHash = parent.FullName.GetHashCode();
+
+            done.TryGetValue(parentHash, out QueuedDirectory parentDirectory);
+            Vertex parentVertex = parentDirectory?.Vertex;
+            int childDepth = (parentDirectory?.Depth ?? 0) + 1;
+
+            // A subtree walked substantially without ever yielding a result. Vendored and
+            // generated trees defeat per-name learning because every child name is unique,
+            // so the evidence has to be held against the subtree that contains them.
+            bool parentIsBarren = parentVertex != null && parentVertex.IsProvenBarren(BarrenSubtreeEvidence);
+
             foreach (DirectoryInfo subfolder in subfolders)
             {
                 // Skip symlinks and junctions to prevent endless recursion
@@ -153,10 +181,35 @@ namespace CeeFind.BetterQueue
 
                 score = GenerateScore(vertex, vertex, score, 0);
                 score = ApplyModifiedTimePrior(score, subfolder.LastWriteTimeUtc);
-                QueueUpVertex(score, vertex, subfolder, parentHash);
+                score = ApplyStructuralPriors(score, childDepth, subfolders.Length);
 
+                if (parentIsBarren)
+                {
+                    // Demotion grows with how much fruitless exploration has been done, and
+                    // stops entirely the moment anything is found anywhere in the subtree.
+                    score /= Math.Log(parentVertex.SubtreeVisits + Math.E);
+                }
+
+                QueueUpVertex(score, vertex, subfolder, parentHash, childDepth);
             }
             MoveFromPreQueueToQueue();
+        }
+
+        /// <summary>
+        /// Priors that need no history: how deep a directory sits, and how diluted it is
+        /// among its siblings. One of six hundred siblings is individually less likely to be
+        /// what you want than one of three, and generated trees are both deep and wide.
+        /// </summary>
+        private static double ApplyStructuralPriors(double score, int depth, int siblingCount)
+        {
+            score = AdjustScoreForRarity(score, siblingCount);
+
+            if (depth > ShallowDepth)
+            {
+                score /= 1.0 + ((depth - ShallowDepth) * DepthPenalty);
+            }
+
+            return score;
         }
 
         public void AddAdjacents(DirectoryInfo start, Vertex startVertex, int firstParentHash)
@@ -171,8 +224,36 @@ namespace CeeFind.BetterQueue
                     break;
                 }
                 UpdateAdjacents(depth, currentQueuedDirectory, startVertex);
+
+                // Credit the whole containing chain, so a subtree that does produce results
+                // is never mistaken for noise.
+                currentQueuedDirectory.Vertex.RecordSubtreeFind();
+
                 currentParentHash = currentQueuedDirectory.Parent;
                 depth++;
+            }
+        }
+
+        /// <summary>
+        /// Charges a visit against every directory containing this one. Individually these
+        /// children are unknowable - vendored trees name every child differently - but the
+        /// containing directory accumulates a very clear picture of whether looking inside
+        /// it has ever been worth the effort.
+        /// </summary>
+        private void RecordSubtreeVisit(int parentHash)
+        {
+            int currentParentHash = parentHash;
+            int guard = 0;
+
+            while (currentParentHash != RootHash && guard++ < MaxAncestorWalk)
+            {
+                if (!done.TryGetValue(currentParentHash, out QueuedDirectory ancestor))
+                {
+                    break;
+                }
+
+                ancestor.Vertex.RecordSubtreeVisit();
+                currentParentHash = ancestor.Parent;
             }
         }
 
@@ -203,6 +284,7 @@ namespace CeeFind.BetterQueue
             qi.Vertex.IsDirty = true;
             qi.IsVisited = true;
             done.Add(qi.Id, qi);
+            RecordSubtreeVisit(qi.Parent);
             return qi;
         }
 
@@ -269,6 +351,16 @@ namespace CeeFind.BetterQueue
             {
                 double hitRate = (vertex.FindCount + 1.0) / (vertex.Visits + 2.0);
                 score = AdjustScoreForFrequency(score, hitRate);
+            }
+
+            // Subtree productivity: a directory whose contents have been searched many times
+            // without ever yielding anything is a poor place to look, however it is named.
+            // This is where vendored and generated trees are caught, since their children
+            // have unique names that per-directory learning can never accumulate.
+            if (vertex.SubtreeVisits > 0)
+            {
+                double subtreeHit = (vertex.SubtreeFinds + 1.0) / (vertex.SubtreeVisits + 2.0);
+                score = AdjustScoreForFrequency(score, subtreeHit);
             }
 
             if (vertex.FindCount > 0)
@@ -563,11 +655,26 @@ namespace CeeFind.BetterQueue
                 score = AdjustScoreForFrequency(score, vertex.FindCount);
             }
             DirectoryInfo directory = new DirectoryInfo(path);
-            QueueUpVertex(score, vertex, directory, directory.Parent.FullName.GetHashCode());
+            QueueUpVertex(score, vertex, directory, directory.Parent.FullName.GetHashCode(), DepthFromRoot(directory));
             return score;
         }
 
-        private void QueueUpVertex(double score, Vertex vertex, DirectoryInfo directory, int parent)
+        /// <summary>
+        /// Depth of a directory reached by index lookup rather than by walking, where no
+        /// parent is on hand to count from.
+        /// </summary>
+        private int DepthFromRoot(DirectoryInfo directory)
+        {
+            if (!directory.FullName.StartsWith(RootDirectory.FullName, StringComparison.OrdinalIgnoreCase))
+            {
+                return 0;
+            }
+
+            string relative = directory.FullName.Substring(RootDirectory.FullName.Length);
+            return relative.Count(c => c == separator);
+        }
+
+        private void QueueUpVertex(double score, Vertex vertex, DirectoryInfo directory, int parent, int depth)
         {
             int pathHash = directory.FullName.GetHashCode();
             if (!done.ContainsKey(directory.FullName.GetHashCode()))
@@ -579,7 +686,12 @@ namespace CeeFind.BetterQueue
                 }
                 else
                 {
-                    preQueue.Add(pathHash, new QueuedDirectory(pathHash, directory, directory.Parent.FullName.GetHashCode(), vertex, score));
+                    preQueue.Add(
+                        pathHash,
+                        new QueuedDirectory(pathHash, directory, directory.Parent.FullName.GetHashCode(), vertex, score)
+                        {
+                            Depth = depth,
+                        });
                 }
 
             }

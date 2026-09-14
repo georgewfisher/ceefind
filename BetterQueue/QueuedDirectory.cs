@@ -29,6 +29,12 @@ namespace CeeFind.BetterQueue
         public double Score { get; set; }
         public int Parent { get; }
         public int Id { get; }
+
+        /// <summary>
+        /// Distance from the search root. Generated and vendored trees run deep; work you
+        /// are actually looking for usually does not.
+        /// </summary>
+        public int Depth { get; set; }
         public DirectoryInfo Directory { get; set; }
         public Vertex Vertex { get; set; }
         public bool IsVisited { get; set; }
