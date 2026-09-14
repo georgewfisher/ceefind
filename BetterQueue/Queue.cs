@@ -51,6 +51,12 @@ namespace CeeFind.BetterQueue
         /// </summary>
         private const int RebaseAttemptsPerVertex = 32;
 
+        /// <summary>
+        /// Bound on neighbours examined per vertex. Scoring recurses two levels, so an
+        /// unbounded fan-out here would be quadratic on a well-connected graph.
+        /// </summary>
+        private const int MaxAdjacentsConsidered = 16;
+
         public CeeFindQueue(
             char separator,
             Stuff stuff,
@@ -146,7 +152,7 @@ namespace CeeFind.BetterQueue
                 }
 
                 score = GenerateScore(vertex, vertex, score, 0);
-                score = BoostScoreBasedOnDate(score, subfolder.LastWriteTimeUtc);
+                score = ApplyModifiedTimePrior(score, subfolder.LastWriteTimeUtc);
                 QueueUpVertex(score, vertex, subfolder, parentHash);
 
             }
@@ -207,16 +213,41 @@ namespace CeeFind.BetterQueue
                 return score;
             }
 
-            // if the subfolder is known it can be scored, otherwise it can be ignored
-            // adjust based on context of adjacent paths
-            if (vertex.Adjacents != null)
+            // Directories that have historically sat near this one. A neighbourhood that
+            // tends to be productive makes this directory worth looking at sooner.
+            //
+            // Each neighbour's contribution is averaged into the running score rather than
+            // replacing it: assigning here meant only the last neighbour enumerated had any
+            // effect, and the incoming score was discarded entirely.
+            if (vertex.Adjacents != null && vertex.Adjacents.Count > 0)
             {
+                double neighbourTotal = 0;
+                int considered = 0;
+
                 foreach (Edge adjacent in vertex.Adjacents.Values)
                 {
-                    if (stuff.TryGetVertex(adjacent.VertexName, out Vertex subVertex))
+                    if (considered >= MaxAdjacentsConsidered)
                     {
-                        score = AdjustScoreForFrequency(GenerateScore(origin, subVertex, BASE_SCORE, depth + 1), Math.Abs(adjacent.RelativePosition.Min()));
+                        break;
                     }
+
+                    if (!stuff.TryGetVertex(adjacent.VertexName, out Vertex subVertex))
+                    {
+                        continue;
+                    }
+
+                    // Closest observed offset. Abs(Min(..)) is not the nearest neighbour -
+                    // for offsets {-3, 1} it yields 3 rather than 1.
+                    int distance = adjacent.RelativePosition.Min(p => Math.Abs(p));
+
+                    // Nearer neighbours say more about this directory than distant ones.
+                    neighbourTotal += GenerateScore(origin, subVertex, BASE_SCORE, depth + 1) / (distance + 1.0);
+                    considered++;
+                }
+
+                if (considered > 0)
+                {
+                    score += neighbourTotal / considered;
                 }
             }
 
@@ -228,10 +259,21 @@ namespace CeeFind.BetterQueue
             {
                 score = AdjustScoreForRarity(score, vertex.PathCount);
             }
+
+            // Hit rate: how often visiting this directory actually pays off. Applied to
+            // every visited directory, not just productive ones, so that somewhere walked
+            // repeatedly without ever yielding a result is demoted - which is the whole
+            // point of preferring likely locations. Laplace smoothing keeps a directory
+            // that simply has not been tried yet from being treated as proven barren.
+            if (vertex.Visits > 0)
+            {
+                double hitRate = (vertex.FindCount + 1.0) / (vertex.Visits + 2.0);
+                score = AdjustScoreForFrequency(score, hitRate);
+            }
+
             if (vertex.FindCount > 0)
             {
                 score = AdjustScoreForFrequency(score, vertex.FindCount);
-                score = AdjustScoreForFrequency(score, (double)vertex.Visits / vertex.FindCount);
                 if (vertex.LastFindUtc.HasValue)
                 {
                     score = BoostScoreBasedOnDate(score, vertex.LastFindUtc.Value);
@@ -382,11 +424,30 @@ namespace CeeFind.BetterQueue
             return divisor <= double.Epsilon ? score : score / divisor;
         }
 
+        /// <summary>
+        /// A directory's own modification time, as a deliberately weak prior.
+        ///
+        /// This is filesystem noise as much as signal: a git checkout rewrites timestamps
+        /// across an entire tree, and a package install touches every vendored directory.
+        /// Feeding it through the same curve as learned evidence let build output outrank
+        /// long-stable source by an order of magnitude in both directions - fresh noise
+        /// boosted, old source penalised. It should nudge ordering, never decide it.
+        /// </summary>
+        private static double ApplyModifiedTimePrior(double score, DateTime modifiedUtc)
+        {
+            double days = Math.Max(DateTime.UtcNow.Subtract(modifiedUtc).TotalDays, 0);
+            double ageFraction = Math.Min(days / 365.0, 1.0);
+            return score * (1.25 - (0.5 * ageFraction));
+        }
+
         private static double BoostScoreBasedOnDate(double score, DateTime date)
         {
-            double daysSinceLastSeen = DateTime.UtcNow.Subtract(date).TotalDays;
-            score = AdjustScoreForRarity(score, daysSinceLastSeen);
-            return score;
+            // Learned recency - when this directory last actually produced a result, or when
+            // matching content was last seen. Unlike a raw file timestamp this is earned,
+            // so it is allowed real weight. Clamped to a day because sub-day precision
+            // carries no signal and an unclamped divisor approaches zero.
+            double daysSinceLastSeen = Math.Max(DateTime.UtcNow.Subtract(date).TotalDays, 1.0);
+            return AdjustScoreForRarity(score, daysSinceLastSeen);
         }
 
         private static double AdjustScoreForFrequency(double score, double frequency)
