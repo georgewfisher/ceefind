@@ -1,4 +1,6 @@
-﻿using System.IO;
+using CeeFind.Utils;
+
+using System.IO;
 
 namespace CeeFind.BetterQueue
 {
@@ -14,7 +16,7 @@ namespace CeeFind.BetterQueue
         }
 
         public QueuedDirectory(DirectoryInfo directory, int parent, Vertex vertex, double score) :
-            this(directory.FullName.GetHashCode(), directory, parent, vertex, score)
+            this(PathHash.Of(directory.FullName), directory, parent, vertex, score)
         {
         }
 

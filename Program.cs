@@ -716,7 +716,7 @@ namespace CeeFind
                 if (resultCount > 0)
                 {
                     lastItemFound = sw.ElapsedTicks;
-                    queue.AddAdjacents(directory.Directory, directory.Vertex, directory.Parent.GetHashCode());
+                    queue.AddAdjacents(directory.Directory, directory.Vertex, directory.Parent);
 
                     // Remember when something was found
                     if (directory.Vertex.LastFindCount == null)

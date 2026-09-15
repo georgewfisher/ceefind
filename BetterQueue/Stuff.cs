@@ -705,7 +705,8 @@ ON CONFLICT(name) DO UPDATE SET
                 "$extensions",
                 vertex.Extensions == null || vertex.Extensions.Count == 0
                     ? (object)DBNull.Value
-                    : JsonSerializer.Serialize(vertex.Extensions, JsonOptions));
+                    : JsonSerializer.Serialize(
+                        vertex.Extensions.OrderBy(e => e, StringComparer.Ordinal).ToList(), JsonOptions));
             command.Parameters.AddWithValue("$truncated", vertex.ExtensionsTruncated ? 1 : 0);
             command.Parameters.AddWithValue(
                 "$findsByType",

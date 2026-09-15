@@ -141,7 +141,8 @@ namespace CeeFind.BetterQueue
             this.RootDirectory = rootDirectory;
             List<string> rootPathList = rootDirectory.FullName.Split(separator).ToList();
             this.Root = rootPathList;
-            this.RootHash = rootDirectory.FullName.GetHashCode();
+            this.RootHash = PathHash.Of(rootDirectory.FullName);
+            this.sampler = new Random(PathHash.Of(rootDirectory.FullName));
             this.stuff = stuff;
             this.queue = new PriorityQueue<QueuedDirectory, double>();
             this.preQueue = new Dictionary<long, QueuedDirectory>();
@@ -169,7 +170,14 @@ namespace CeeFind.BetterQueue
         private const double BackoffHalfLife = 250.0;
         private const double RefreshRate = 1.0 / 6.0;
 
-        private readonly Random sampler = new Random();
+        /// <summary>
+        /// Seeded from the search root so the sampling decisions are reproducible: the same
+        /// search in the same place behaves the same way twice. Left unseeded, which
+        /// directories happened to be read in full varied per run, and because that governs
+        /// what gets learned the outcome swung wildly - the same search was measured at 29
+        /// directories and at 5,903.
+        /// </summary>
+        private readonly Random sampler;
         private int fullReadsUsed;
         private int unknownDirectoriesSeen;
 
@@ -297,7 +305,7 @@ namespace CeeFind.BetterQueue
 
         public void EnqueueSubfolder(DirectoryInfo parent, DirectoryInfo[] subfolders)
         {
-            int parentHash = parent.FullName.GetHashCode();
+            int parentHash = PathHash.Of(parent.FullName);
 
             done.TryGetValue(parentHash, out QueuedDirectory parentDirectory);
             Vertex parentVertex = parentDirectory?.Vertex;
@@ -316,7 +324,7 @@ namespace CeeFind.BetterQueue
                     continue;
                 }
 
-                if (done.TryGetValue(subfolder.FullName.GetHashCode(), out QueuedDirectory qd)
+                if (done.TryGetValue(PathHash.Of(subfolder.FullName), out QueuedDirectory qd)
                     && qd.IsVisited)
                 {
                     continue;
@@ -493,7 +501,11 @@ namespace CeeFind.BetterQueue
 
         private static void Absorb(Vertex vertex, HashSet<string> extensions, HashSet<int> trigrams, int fileCount)
         {
-            foreach (string extension in extensions)
+            // Ordered deliberately. Set iteration order follows randomised string hashing,
+            // so an unordered walk decided which extensions survived the per-vertex cap
+            // differently on each run, and the profile drove scoring - another way for the
+            // same search to behave differently twice.
+            foreach (string extension in extensions.OrderBy(e => e, StringComparer.Ordinal))
             {
                 vertex.RecordExtension(extension);
             }
@@ -687,7 +699,8 @@ namespace CeeFind.BetterQueue
 
             bool needInsideDetail = insideFileFilter.Count > 0;
 
-            Seed(bestScoreByVertex, stuff.GetShapeSeedVertexes(ShapeSeedLimit), BASE_SCORE * 10);
+            List<string> shapeSeeds = stuff.GetShapeSeedVertexes(ShapeSeedLimit);
+            Seed(bestScoreByVertex, shapeSeeds, BASE_SCORE * 10);
 
             foreach (string filenameFilter in FileNameFilters)
             {
@@ -940,7 +953,7 @@ namespace CeeFind.BetterQueue
                 score = AdjustScoreForFrequency(score, vertex.FindCount);
             }
             DirectoryInfo directory = new DirectoryInfo(path);
-            QueueUpVertex(score, vertex, directory, directory.Parent.FullName.GetHashCode(), DepthFromRoot(directory));
+            QueueUpVertex(score, vertex, directory, PathHash.Of(directory.Parent.FullName), DepthFromRoot(directory));
             return score;
         }
 
@@ -961,8 +974,8 @@ namespace CeeFind.BetterQueue
 
         private void QueueUpVertex(double score, Vertex vertex, DirectoryInfo directory, int parent, int depth)
         {
-            int pathHash = directory.FullName.GetHashCode();
-            if (!done.ContainsKey(directory.FullName.GetHashCode()))
+            int pathHash = PathHash.Of(directory.FullName);
+            if (!done.ContainsKey(PathHash.Of(directory.FullName)))
             {
                 if (preQueue.ContainsKey(pathHash))
                 {
@@ -973,7 +986,7 @@ namespace CeeFind.BetterQueue
                 {
                     preQueue.Add(
                         pathHash,
-                        new QueuedDirectory(pathHash, directory, directory.Parent.FullName.GetHashCode(), vertex, score)
+                        new QueuedDirectory(pathHash, directory, PathHash.Of(directory.Parent.FullName), vertex, score)
                         {
                             Depth = depth,
                         });
