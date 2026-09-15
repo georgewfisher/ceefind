@@ -40,6 +40,12 @@ namespace CeeFind.BetterQueue
         public bool IsVisited { get; set; }
         public bool IsRoot { get; set; }
 
+        /// <summary>
+        /// Set once this directory has been pushed to the back of the queue by the trigram
+        /// check, so it is not deferred a second time.
+        /// </summary>
+        public bool IsDeferred { get; set; }
+
         public override string ToString()
         {
             return this.Directory.Name;

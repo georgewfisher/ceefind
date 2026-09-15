@@ -193,6 +193,118 @@ namespace CeeFind.Utils
         }
 
         /// <summary>
+        /// Literal fragments that must appear in any name the expression matches.
+        ///
+        /// Used to interrogate a directory's trigram sketch, so it has to be conservative:
+        /// anything optional, alternated or inside a character class is skipped, because a
+        /// fragment that only *might* be required would let a real match be ruled out.
+        /// </summary>
+        internal static List<string> RequiredLiterals(string pattern)
+        {
+            List<string> literals = new List<string>();
+            if (string.IsNullOrEmpty(pattern))
+            {
+                return literals;
+            }
+
+            StringBuilder run = new StringBuilder();
+            int groupDepth = 0;
+            bool inClass = false;
+
+            void Flush()
+            {
+                if (run.Length >= 3)
+                {
+                    literals.Add(run.ToString());
+                }
+
+                run.Clear();
+            }
+
+            for (int i = 0; i < pattern.Length; i++)
+            {
+                char c = pattern[i];
+
+                if (inClass)
+                {
+                    if (c == ']') { inClass = false; }
+                    continue;
+                }
+
+                if (c == '\\' && i + 1 < pattern.Length)
+                {
+                    char next = pattern[i + 1];
+                    i++;
+
+                    // An escaped literal is only dependable if no quantifier follows it.
+                    if (i + 1 < pattern.Length && IsQuantifier(pattern[i + 1]))
+                    {
+                        Flush();
+                        continue;
+                    }
+
+                    if (char.IsLetterOrDigit(next) || next == '.' || next == '_' || next == '-')
+                    {
+                        run.Append(next);
+                    }
+                    else
+                    {
+                        Flush();
+                    }
+
+                    continue;
+                }
+
+                switch (c)
+                {
+                    case '[':
+                        inClass = true;
+                        Flush();
+                        continue;
+                    case '(':
+                        groupDepth++;
+                        Flush();
+                        continue;
+                    case ')':
+                        groupDepth = Math.Max(0, groupDepth - 1);
+                        Flush();
+                        continue;
+                    case '^':
+                    case '$':
+                    case '.':
+                    case '*':
+                    case '+':
+                    case '?':
+                    case '|':
+                    case '{':
+                    case '}':
+                        Flush();
+                        continue;
+                }
+
+                // Anything inside a group might be alternated away, so it is not required.
+                if (groupDepth > 0)
+                {
+                    Flush();
+                    continue;
+                }
+
+                // A character followed by a quantifier is optional or repeated, so the run
+                // ends before it rather than including it.
+                if (i + 1 < pattern.Length && IsQuantifier(pattern[i + 1]))
+                {
+                    Flush();
+                    continue;
+                }
+
+                run.Append(c);
+            }
+
+            Flush();
+            return literals;
+        }
+
+        /// <summary>
         /// Normalises an observed file extension to the same form the extractor produces.
         /// </summary>
         internal static string NormaliseExtension(string fileExtension)

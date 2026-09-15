@@ -82,6 +82,21 @@ namespace CeeFind.BetterQueue
         private const int MaxAncestorWalk = 64;
 
         /// <summary>
+        /// Files a subtree must hold before a trigram sketch earns its keep. Below this,
+        /// reading the directory is cheaper than reasoning about it.
+        /// </summary>
+        private const long FilterWorthwhileFiles = 1000;
+
+        /// <summary>
+        /// Priority given to a directory the sketch says is unpromising. Large and positive
+        /// so it sorts behind everything scored normally - the queue is a min-heap over
+        /// negated scores.
+        /// </summary>
+        private const double DeferredPriority = 1e9;
+
+        private readonly List<string> requiredLiterals;
+
+        /// <summary>
         /// How thoroughly a subtree must have been observed before its *absence* of a file
         /// type is believed. Below this the check abstains.
         /// </summary>
@@ -110,6 +125,14 @@ namespace CeeFind.BetterQueue
             // bounded by the same wildcard; otherwise a name matching one filter but not
             // the glob would be lost.
             this.EnumerationGlob = DeriveEnumerationGlob(this.FileNameFilters);
+
+            // Fragments that must appear in any matching name, used to interrogate the
+            // trigram sketches. Empty means the sketches cannot help this search.
+            this.requiredLiterals = new List<string>();
+            foreach (string filter in this.FileNameFilters)
+            {
+                this.requiredLiterals.AddRange(FilterAnalysis.RequiredLiterals(filter));
+            }
             RegexOptions caseSensitivity = searchSettings.CaseSensitive ? RegexOptions.None : RegexOptions.IgnoreCase;
             this.FileNameFilterRegex = fileNameFilter.Select(f => new Regex(f, caseSensitivity | RegexOptions.Compiled)).ToArray();
             this.NegativeFileNameFilterRegex = negativeFilenameFilter.Select(f => new Regex(f, caseSensitivity | RegexOptions.Compiled)).ToArray();
@@ -411,6 +434,17 @@ namespace CeeFind.BetterQueue
         /// </summary>
         public void RecordDirectoryContents(QueuedDirectory directory, IEnumerable<string> extensions)
         {
+            RecordDirectoryContents(directory, extensions, null);
+        }
+
+        /// <summary>
+        /// Records what a full listing revealed: file types against this directory and
+        /// every one containing it, and filenames into the trigram sketches of subtrees big
+        /// enough to carry one.
+        /// </summary>
+        public void RecordDirectoryContents(
+            QueuedDirectory directory, IEnumerable<string> extensions, IEnumerable<string> filenames)
+        {
             HashSet<string> distinct = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (string raw in extensions)
             {
@@ -421,15 +455,27 @@ namespace CeeFind.BetterQueue
                 }
             }
 
-            if (distinct.Count == 0)
+            HashSet<int> trigrams = null;
+            int fileCount = 0;
+            if (filenames != null)
+            {
+                trigrams = new HashSet<int>();
+                foreach (string name in filenames)
+                {
+                    fileCount++;
+                    foreach (int trigram in TrigramFilter.TrigramsOf(name))
+                    {
+                        trigrams.Add(trigram);
+                    }
+                }
+            }
+
+            if (distinct.Count == 0 && fileCount == 0)
             {
                 return;
             }
 
-            foreach (string extension in distinct)
-            {
-                directory.Vertex.RecordExtension(extension);
-            }
+            Absorb(directory.Vertex, distinct, trigrams, fileCount);
 
             int currentParentHash = directory.Parent;
             int guard = 0;
@@ -440,13 +486,69 @@ namespace CeeFind.BetterQueue
                     break;
                 }
 
-                foreach (string extension in distinct)
-                {
-                    ancestor.Vertex.RecordExtension(extension);
-                }
-
+                Absorb(ancestor.Vertex, distinct, trigrams, fileCount);
                 currentParentHash = ancestor.Parent;
             }
+        }
+
+        private static void Absorb(Vertex vertex, HashSet<string> extensions, HashSet<int> trigrams, int fileCount)
+        {
+            foreach (string extension in extensions)
+            {
+                vertex.RecordExtension(extension);
+            }
+
+            if (trigrams == null || fileCount == 0)
+            {
+                return;
+            }
+
+            vertex.FilterFileCount += fileCount;
+            vertex.IsDirty = true;
+
+            // Only subtrees costly enough to be worth avoiding carry a sketch.
+            if (vertex.FilterFileCount < FilterWorthwhileFiles)
+            {
+                return;
+            }
+
+            vertex.NameFilter = TrigramFilter.FromTrigrams(trigrams, vertex.NameFilter).ToBytes();
+            vertex.IsFilterDirty = true;
+        }
+
+        /// <summary>
+        /// The two-pass check. A directory whose sketch shows no sign of what is being
+        /// looked for is sent to the back of the queue rather than scanned now - it is
+        /// still scanned, because the sketch may be incomplete or out of date, but only
+        /// once the likely places have been exhausted.
+        ///
+        /// Deliberately done on dequeue rather than on enqueue: the sketch is only read for
+        /// directories the search actually reaches.
+        /// </summary>
+        internal bool ShouldDefer(QueuedDirectory directory)
+        {
+            if (directory.IsDeferred || requiredLiterals.Count == 0)
+            {
+                return false;
+            }
+
+            Vertex vertex = directory.Vertex;
+            if (vertex.NameFilter == null || vertex.FilterFileCount < FilterWorthwhileFiles)
+            {
+                return false;
+            }
+
+            TrigramFilter filter = TrigramFilter.FromBytes(vertex.NameFilter);
+            if (filter == null || filter.MightContainAll(requiredLiterals))
+            {
+                return false;
+            }
+
+            directory.IsDeferred = true;
+            directory.IsVisited = false;
+            done.Remove(directory.Id);
+            queue.Enqueue(directory, DeferredPriority);
+            return true;
         }
 
         public QueuedDirectory Consume()

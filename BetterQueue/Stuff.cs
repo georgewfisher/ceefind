@@ -103,7 +103,8 @@ namespace CeeFind.BetterQueue
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 "SELECT name, visits, find_count, last_find_utc, histogram_json, adjacents_json, path_count, " +
-                "subtree_visits, subtree_finds, extensions_json, extensions_truncated, subtree_finds_by_type " +
+                "subtree_visits, subtree_finds, extensions_json, extensions_truncated, subtree_finds_by_type, " +
+                "name_filter, filter_files " +
                 "FROM vertex WHERE name = $name LIMIT 1;";
             command.Parameters.AddWithValue("$name", name);
 
@@ -138,6 +139,8 @@ namespace CeeFind.BetterQueue
                 SubtreeFindsByType = reader.IsDBNull(11)
                     ? null
                     : JsonSerializer.Deserialize<Dictionary<string, long>>(reader.GetString(11), JsonOptions),
+                NameFilter = reader.IsDBNull(12) ? null : (byte[])reader["name_filter"],
+                FilterFileCount = reader.GetInt64(13),
                 ArePathsLoaded = false,
                 IsDirty = false,
             };
@@ -662,8 +665,8 @@ namespace CeeFind.BetterQueue
             using SqliteCommand command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = @"
-INSERT INTO vertex (name, visits, find_count, last_find_utc, histogram_json, adjacents_json, path_count, subtree_visits, subtree_finds, extensions_json, extensions_truncated, subtree_finds_by_type)
-VALUES ($name, $visits, $findCount, $lastFind, $histogram, $adjacents, $pathCount, $subtreeVisits, $subtreeFinds, $extensions, $truncated, $findsByType)
+INSERT INTO vertex (name, visits, find_count, last_find_utc, histogram_json, adjacents_json, path_count, subtree_visits, subtree_finds, extensions_json, extensions_truncated, subtree_finds_by_type, name_filter, filter_files)
+VALUES ($name, $visits, $findCount, $lastFind, $histogram, $adjacents, $pathCount, $subtreeVisits, $subtreeFinds, $extensions, $truncated, $findsByType, $nameFilter, $filterFiles)
 ON CONFLICT(name) DO UPDATE SET
     visits         = excluded.visits,
     find_count     = excluded.find_count,
@@ -675,7 +678,9 @@ ON CONFLICT(name) DO UPDATE SET
     subtree_finds  = excluded.subtree_finds,
     extensions_json = excluded.extensions_json,
     extensions_truncated = excluded.extensions_truncated,
-    subtree_finds_by_type = excluded.subtree_finds_by_type;";
+    subtree_finds_by_type = excluded.subtree_finds_by_type,
+    name_filter    = COALESCE(excluded.name_filter, vertex.name_filter),
+    filter_files   = excluded.filter_files;";
 
             command.Parameters.AddWithValue("$name", vertex.Name);
             command.Parameters.AddWithValue("$visits", vertex.Visits);
@@ -707,6 +712,12 @@ ON CONFLICT(name) DO UPDATE SET
                 vertex.SubtreeFindsByType == null || vertex.SubtreeFindsByType.Count == 0
                     ? (object)DBNull.Value
                     : JsonSerializer.Serialize(vertex.SubtreeFindsByType, JsonOptions));
+            command.Parameters.AddWithValue(
+                "$nameFilter",
+                vertex.IsFilterDirty && vertex.NameFilter != null
+                    ? (object)vertex.NameFilter
+                    : DBNull.Value);
+            command.Parameters.AddWithValue("$filterFiles", vertex.FilterFileCount);
 
             command.ExecuteNonQuery();
         }

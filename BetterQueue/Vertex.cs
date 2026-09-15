@@ -101,6 +101,23 @@ namespace CeeFind.BetterQueue
         [JsonIgnore]
         public bool IsDirty { get; set; }
 
+        /// <summary>
+        /// Trigram sketch over filenames seen beneath this directory, carried only for
+        /// subtrees big enough that scanning them is expensive. Used to push unlikely
+        /// places down the queue, never to remove them from it.
+        /// </summary>
+        [JsonIgnore]
+        public byte[] NameFilter { get; set; }
+
+        /// <summary>
+        /// How many files have contributed to the sketch. Confidence, and the test for
+        /// whether a subtree is big enough to deserve one.
+        /// </summary>
+        public long FilterFileCount { get; set; }
+
+        [JsonIgnore]
+        public bool IsFilterDirty { get; set; }
+
         [JsonIgnore]
         public int AdjacentsHitCount { get; private set; }
 

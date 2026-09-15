@@ -582,6 +582,14 @@ namespace CeeFind
                     break;
                 }
 
+                // First pass: a cheap look at what this subtree is known to contain. If
+                // nothing here resembles the search, it goes to the back of the queue -
+                // still scanned, just after the promising places.
+                if (queue.ShouldDefer(directory))
+                {
+                    continue;
+                }
+
                 bool shownDirName = false;
                 bool readFully = queue.ShouldReadFully(directory.Vertex);
 
@@ -699,7 +707,10 @@ namespace CeeFind
                 // but only a full listing tells the truth about what the directory holds.
                 if (readFully)
                 {
-                    queue.RecordDirectoryContents(directory, fileInfoArray.Select(f => f.Extension));
+                    queue.RecordDirectoryContents(
+                        directory,
+                        fileInfoArray.Select(f => f.Extension),
+                        fileInfoArray.Select(f => f.Name));
                 }
 
                 if (resultCount > 0)
