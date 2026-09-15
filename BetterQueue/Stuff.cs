@@ -1,4 +1,5 @@
 using CeeFind.Storage;
+using CeeFind.Utils;
 
 using Microsoft.Data.Sqlite;
 
@@ -102,7 +103,7 @@ namespace CeeFind.BetterQueue
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 "SELECT name, visits, find_count, last_find_utc, histogram_json, adjacents_json, path_count, " +
-                "subtree_visits, subtree_finds " +
+                "subtree_visits, subtree_finds, extensions_json, extensions_truncated, subtree_finds_by_type " +
                 "FROM vertex WHERE name = $name LIMIT 1;";
             command.Parameters.AddWithValue("$name", name);
 
@@ -128,6 +129,15 @@ namespace CeeFind.BetterQueue
                 PathCount = reader.GetInt32(6),
                 SubtreeVisits = reader.GetInt64(7),
                 SubtreeFinds = reader.GetInt64(8),
+                Extensions = reader.IsDBNull(9)
+                    ? null
+                    : new HashSet<string>(
+                        JsonSerializer.Deserialize<List<string>>(reader.GetString(9), JsonOptions),
+                        StringComparer.OrdinalIgnoreCase),
+                ExtensionsTruncated = reader.GetInt32(10) != 0,
+                SubtreeFindsByType = reader.IsDBNull(11)
+                    ? null
+                    : JsonSerializer.Deserialize<Dictionary<string, long>>(reader.GetString(11), JsonOptions),
                 ArePathsLoaded = false,
                 IsDirty = false,
             };
@@ -490,7 +500,7 @@ namespace CeeFind.BetterQueue
             // which directories, in which shapes, tend to hold what you are looking for.
             string[] worthRecording = hasContent
                 ? filenameRegexes
-                : filenameRegexes.Where(f => !ExtensionShapedFilter.IsMatch(f)).ToArray();
+                : filenameRegexes.Where(f => !FilterAnalysis.IsPureSuffix(f)).ToArray();
 
             if (!hasContent && worthRecording.Length == 0)
             {
@@ -652,8 +662,8 @@ namespace CeeFind.BetterQueue
             using SqliteCommand command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = @"
-INSERT INTO vertex (name, visits, find_count, last_find_utc, histogram_json, adjacents_json, path_count, subtree_visits, subtree_finds)
-VALUES ($name, $visits, $findCount, $lastFind, $histogram, $adjacents, $pathCount, $subtreeVisits, $subtreeFinds)
+INSERT INTO vertex (name, visits, find_count, last_find_utc, histogram_json, adjacents_json, path_count, subtree_visits, subtree_finds, extensions_json, extensions_truncated, subtree_finds_by_type)
+VALUES ($name, $visits, $findCount, $lastFind, $histogram, $adjacents, $pathCount, $subtreeVisits, $subtreeFinds, $extensions, $truncated, $findsByType)
 ON CONFLICT(name) DO UPDATE SET
     visits         = excluded.visits,
     find_count     = excluded.find_count,
@@ -662,7 +672,10 @@ ON CONFLICT(name) DO UPDATE SET
     adjacents_json = excluded.adjacents_json,
     path_count     = excluded.path_count,
     subtree_visits = excluded.subtree_visits,
-    subtree_finds  = excluded.subtree_finds;";
+    subtree_finds  = excluded.subtree_finds,
+    extensions_json = excluded.extensions_json,
+    extensions_truncated = excluded.extensions_truncated,
+    subtree_finds_by_type = excluded.subtree_finds_by_type;";
 
             command.Parameters.AddWithValue("$name", vertex.Name);
             command.Parameters.AddWithValue("$visits", vertex.Visits);
@@ -683,6 +696,17 @@ ON CONFLICT(name) DO UPDATE SET
             command.Parameters.AddWithValue("$pathCount", vertex.PathCount);
             command.Parameters.AddWithValue("$subtreeVisits", vertex.SubtreeVisits);
             command.Parameters.AddWithValue("$subtreeFinds", vertex.SubtreeFinds);
+            command.Parameters.AddWithValue(
+                "$extensions",
+                vertex.Extensions == null || vertex.Extensions.Count == 0
+                    ? (object)DBNull.Value
+                    : JsonSerializer.Serialize(vertex.Extensions, JsonOptions));
+            command.Parameters.AddWithValue("$truncated", vertex.ExtensionsTruncated ? 1 : 0);
+            command.Parameters.AddWithValue(
+                "$findsByType",
+                vertex.SubtreeFindsByType == null || vertex.SubtreeFindsByType.Count == 0
+                    ? (object)DBNull.Value
+                    : JsonSerializer.Serialize(vertex.SubtreeFindsByType, JsonOptions));
 
             command.ExecuteNonQuery();
         }

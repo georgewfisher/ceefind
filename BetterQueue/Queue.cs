@@ -34,6 +34,12 @@ namespace CeeFind.BetterQueue
         private readonly Dictionary<string, bool> directoryExists =
             new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>
+        /// File types this search is after, recovered from the filters however they were
+        /// written. Empty means no opinion, which must never be read as "matches nothing".
+        /// </summary>
+        private readonly HashSet<string> targetExtensions;
+
         private readonly long INDEX_LOOKUP_SCORE = 1000000;
         private readonly long BASE_SCORE = 100;
 
@@ -75,6 +81,19 @@ namespace CeeFind.BetterQueue
         /// </summary>
         private const int MaxAncestorWalk = 64;
 
+        /// <summary>
+        /// How thoroughly a subtree must have been observed before its *absence* of a file
+        /// type is believed. Below this the check abstains.
+        /// </summary>
+        private const long ExtensionEvidenceRequired = 25;
+
+        /// <summary>
+        /// Demotion applied to a directory that demonstrably holds none of the file types
+        /// being searched for. Firm, but still a demotion rather than a prune - the walk
+        /// reaches it if nothing better exists.
+        /// </summary>
+        private const double ImplausibleTypePenalty = 25.0;
+
         public CeeFindQueue(
             char separator,
             Stuff stuff,
@@ -85,6 +104,7 @@ namespace CeeFind.BetterQueue
             SearchSettings searchSettings)
         {
             this.FileNameFilters = fileNameFilter.ToArray();
+            this.targetExtensions = FilterAnalysis.TargetExtensions(this.FileNameFilters);
             RegexOptions caseSensitivity = searchSettings.CaseSensitive ? RegexOptions.None : RegexOptions.IgnoreCase;
             this.FileNameFilterRegex = fileNameFilter.Select(f => new Regex(f, caseSensitivity | RegexOptions.Compiled)).ToArray();
             this.NegativeFileNameFilterRegex = negativeFilenameFilter.Select(f => new Regex(f, caseSensitivity | RegexOptions.Compiled)).ToArray();
@@ -155,7 +175,7 @@ namespace CeeFind.BetterQueue
             // A subtree walked substantially without ever yielding a result. Vendored and
             // generated trees defeat per-name learning because every child name is unique,
             // so the evidence has to be held against the subtree that contains them.
-            bool parentIsBarren = parentVertex != null && parentVertex.IsProvenBarren(BarrenSubtreeEvidence);
+            bool parentIsBarren = parentVertex != null && parentVertex.IsProvenBarren(BarrenSubtreeEvidence, targetExtensions);
 
             foreach (DirectoryInfo subfolder in subfolders)
             {
@@ -182,6 +202,16 @@ namespace CeeFind.BetterQueue
                 score = GenerateScore(vertex, vertex, score, 0);
                 score = ApplyModifiedTimePrior(score, subfolder.LastWriteTimeUtc);
                 score = ApplyStructuralPriors(score, childDepth, subfolders.Length);
+
+                // A directory thoroughly observed to contain none of the file types being
+                // searched for cannot satisfy this search, whatever its history says. This
+                // is a fact about the directory rather than a verdict on past queries, so
+                // unlike the visit/find counters it cannot be poisoned by a search for an
+                // unrelated file type.
+                if (vertex.SubtreeVisits >= ExtensionEvidenceRequired && !vertex.CouldContainAny(targetExtensions))
+                {
+                    score /= ImplausibleTypePenalty;
+                }
 
                 if (parentIsBarren)
                 {
@@ -227,7 +257,7 @@ namespace CeeFind.BetterQueue
 
                 // Credit the whole containing chain, so a subtree that does produce results
                 // is never mistaken for noise.
-                currentQueuedDirectory.Vertex.RecordSubtreeFind();
+                currentQueuedDirectory.Vertex.RecordSubtreeFind(targetExtensions);
 
                 currentParentHash = currentQueuedDirectory.Parent;
                 depth++;
@@ -263,6 +293,51 @@ namespace CeeFind.BetterQueue
             {
                 Vertex.UpdateAdjacents(distance, other, start);
                 Vertex.UpdateAdjacents(-distance, start, other);
+            }
+        }
+
+        /// <summary>
+        /// Records the file types present in a directory, against that directory and every
+        /// one containing it. Costs nothing extra: the walk has already enumerated these
+        /// files, and the ancestor chain is already walked to charge the visit.
+        /// </summary>
+        public void RecordDirectoryContents(QueuedDirectory directory, IEnumerable<string> extensions)
+        {
+            HashSet<string> distinct = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string raw in extensions)
+            {
+                string normalised = FilterAnalysis.NormaliseExtension(raw);
+                if (normalised != null)
+                {
+                    distinct.Add(normalised);
+                }
+            }
+
+            if (distinct.Count == 0)
+            {
+                return;
+            }
+
+            foreach (string extension in distinct)
+            {
+                directory.Vertex.RecordExtension(extension);
+            }
+
+            int currentParentHash = directory.Parent;
+            int guard = 0;
+            while (currentParentHash != RootHash && guard++ < MaxAncestorWalk)
+            {
+                if (!done.TryGetValue(currentParentHash, out QueuedDirectory ancestor))
+                {
+                    break;
+                }
+
+                foreach (string extension in distinct)
+                {
+                    ancestor.Vertex.RecordExtension(extension);
+                }
+
+                currentParentHash = ancestor.Parent;
             }
         }
 

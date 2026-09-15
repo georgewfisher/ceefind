@@ -48,6 +48,32 @@ namespace CeeFind.BetterQueue
 
         public long SubtreeFinds { get; set; }
 
+        /// <summary>
+        /// Finds beneath this directory, broken down by the file type that was being
+        /// searched for. A single total cannot distinguish "nothing has ever been found
+        /// here" from "nothing of the kind you asked for last time was found here", which
+        /// is what let a run of .csproj searches condemn a TypeScript source tree.
+        /// The "*" key holds searches with no identifiable target type.
+        /// </summary>
+        public Dictionary<string, long> SubtreeFindsByType { get; set; }
+
+        /// <summary>
+        /// File types observed anywhere beneath this directory.
+        ///
+        /// This answers a different question from the visit/find counters, and a better
+        /// posed one. Those counters record whether past searches happened to succeed here,
+        /// which says nothing about a search for a different file type - a directory full
+        /// of TypeScript accrues nothing but failures while you are looking for .csproj.
+        /// What is observed here is a property of the directory rather than of the query.
+        /// </summary>
+        public HashSet<string> Extensions { get; set; }
+
+        /// <summary>
+        /// Set once the observed set has outgrown its cap. Absence can no longer be trusted
+        /// after that, so plausibility checks must abstain rather than guess.
+        /// </summary>
+        public bool ExtensionsTruncated { get; set; }
+
         public DateTime? LastFindUtc { get; set; }
 
         public Histogram LastFindCount { get; set; }
@@ -122,12 +148,37 @@ namespace CeeFind.BetterQueue
 
         /// <summary>
         /// True when this subtree has been explored substantially and has never produced a
-        /// result. Zero finds is the discriminator rather than a ratio: one result anywhere
-        /// beneath a directory is enough to stop treating it as noise.
+        /// result *for the kind of thing now being looked for*. Judging that against a
+        /// single undifferentiated total is what poisoned directories that were simply the
+        /// wrong file type for an earlier search.
         /// </summary>
-        internal bool IsProvenBarren(long minimumEvidence)
+        internal bool IsProvenBarren(long minimumEvidence, HashSet<string> wantedTypes)
         {
-            return SubtreeFinds == 0 && SubtreeVisits >= minimumEvidence;
+            if (SubtreeVisits < minimumEvidence)
+            {
+                return false;
+            }
+
+            if (wantedTypes == null || wantedTypes.Count == 0)
+            {
+                return SubtreeFinds == 0;
+            }
+
+            if (SubtreeFindsByType == null)
+            {
+                return true;
+            }
+
+            foreach (string type in wantedTypes)
+            {
+                if (SubtreeFindsByType.TryGetValue(type, out long finds) && finds > 0)
+                {
+                    return false;
+                }
+            }
+
+            // A wildcard search that succeeded here is evidence for anything.
+            return !(SubtreeFindsByType.TryGetValue("*", out long any) && any > 0);
         }
 
         internal void RecordSubtreeVisit()
@@ -136,10 +187,91 @@ namespace CeeFind.BetterQueue
             IsDirty = true;
         }
 
-        internal void RecordSubtreeFind()
+        internal void RecordSubtreeFind(HashSet<string> types)
         {
             SubtreeFinds++;
+            SubtreeFindsByType ??= new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+
+            if (types == null || types.Count == 0)
+            {
+                SubtreeFindsByType["*"] = SubtreeFindsByType.GetValueOrDefault("*") + 1;
+            }
+            else
+            {
+                foreach (string type in types)
+                {
+                    SubtreeFindsByType[type] = SubtreeFindsByType.GetValueOrDefault(type) + 1;
+                }
+            }
+
             IsDirty = true;
+        }
+
+        /// <summary>
+        /// Maximum distinct file types tracked per directory. A directory holding more than
+        /// this is a grab-bag whose contents predict nothing anyway.
+        /// </summary>
+        private const int MaxExtensions = 64;
+
+        internal bool RecordExtension(string extension)
+        {
+            if (extension == null)
+            {
+                return false;
+            }
+
+            Extensions ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            if (Extensions.Contains(extension))
+            {
+                return false;
+            }
+
+            if (Extensions.Count >= MaxExtensions)
+            {
+                if (!ExtensionsTruncated)
+                {
+                    ExtensionsTruncated = true;
+                    IsDirty = true;
+                }
+
+                return false;
+            }
+
+            Extensions.Add(extension);
+            IsDirty = true;
+            return true;
+        }
+
+        /// <summary>
+        /// Whether this directory could plausibly satisfy a search for the given file types.
+        ///
+        /// Abstains - returns true - whenever the evidence is not good enough to rule it
+        /// out: nothing observed yet, the observed set was truncated, or the caller has no
+        /// particular type in mind. Only a confident, complete observation that none of the
+        /// wanted types has ever appeared here is allowed to say no.
+        /// </summary>
+        internal bool CouldContainAny(HashSet<string> wanted)
+        {
+            if (wanted == null || wanted.Count == 0)
+            {
+                return true;
+            }
+
+            if (ExtensionsTruncated || Extensions == null || Extensions.Count == 0)
+            {
+                return true;
+            }
+
+            foreach (string extension in wanted)
+            {
+                if (Extensions.Contains(extension))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         internal void RecordFindLocation(string absolutePath, DateTime utcNow)

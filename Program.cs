@@ -685,6 +685,11 @@ namespace CeeFind
                 }
 
                 int resultCount = metrics.Settings.SearchInFiles ? resultsInFiles : resultsInDirectory;
+
+                // Observing what is here costs nothing - the files are already enumerated -
+                // and it is what lets a later search rule this directory out by file type.
+                queue.RecordDirectoryContents(directory, fileInfoArray.Select(f => f.Extension));
+
                 if (resultCount > 0)
                 {
                     lastItemFound = sw.ElapsedTicks;
