@@ -94,6 +94,12 @@ namespace CeeFind.BetterQueue
         /// </summary>
         private const double DeferredPriority = 1e9;
 
+        /// <summary>
+        /// How far up from a find the containing directories are credited. Two levels
+        /// reaches the directory holding the siblings, and the one holding those.
+        /// </summary>
+        private const int ParentFindLevels = 2;
+
         private readonly List<string> requiredLiterals;
 
         /// <summary>
@@ -561,6 +567,35 @@ namespace CeeFind.BetterQueue
             done.Remove(directory.Id);
             queue.Enqueue(directory, DeferredPriority);
             return true;
+        }
+
+        /// <summary>
+        /// Credits the directories containing a find with having produced one.
+        ///
+        /// A hit in precise/src/sql only ever recorded the location of sql, so the index
+        /// knew where that one directory was and nothing about the area around it. What you
+        /// want next is often beside what you found last time rather than in it - a sibling
+        /// like schema or utils - and no amount of knowing about sql leads there.
+        ///
+        /// Recording the containing directories as find locations too means seeding src
+        /// queues precise/src, whose children are exactly those siblings.
+        /// </summary>
+        internal void RecordFindAncestry(QueuedDirectory directory, DateTime utcNow)
+        {
+            int hash = directory.Parent;
+            int level = 0;
+
+            while (hash != RootHash && level++ < ParentFindLevels)
+            {
+                if (!done.TryGetValue(hash, out QueuedDirectory ancestor))
+                {
+                    break;
+                }
+
+                ancestor.Vertex.RecordFind(utcNow);
+                stuff.RecordFindLocation(ancestor.Vertex, ancestor.Directory.FullName, utcNow);
+                hash = ancestor.Parent;
+            }
         }
 
         public QueuedDirectory Consume()

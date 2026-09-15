@@ -727,6 +727,7 @@ namespace CeeFind
 
                     // Remember directories where something was found (for index)
                     stuff.RecordFindLocation(directory.Vertex, directory.Directory.FullName, DateTime.UtcNow);
+                    queue.RecordFindAncestry(directory, DateTime.UtcNow);
                 }
 
                 queue.EnqueueSubfolder(

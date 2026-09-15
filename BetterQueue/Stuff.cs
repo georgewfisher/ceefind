@@ -276,7 +276,9 @@ namespace CeeFind.BetterQueue
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 "SELECT name FROM vertex WHERE find_count > 0 " +
-                "ORDER BY find_count DESC, path_count DESC LIMIT $limit;";
+                // name breaks ties so the seed set is the same from one run to the next;
+                // without it SQLite may return equally-ranked rows in any order.
+                "ORDER BY find_count DESC, path_count DESC, name ASC LIMIT $limit;";
             command.Parameters.AddWithValue("$limit", limit);
 
             using SqliteDataReader reader = command.ExecuteReader();
