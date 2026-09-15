@@ -105,6 +105,11 @@ namespace CeeFind.BetterQueue
         {
             this.FileNameFilters = fileNameFilter.ToArray();
             this.targetExtensions = FilterAnalysis.TargetExtensions(this.FileNameFilters);
+
+            // Only worth asking the filesystem to filter when every positive filter can be
+            // bounded by the same wildcard; otherwise a name matching one filter but not
+            // the glob would be lost.
+            this.EnumerationGlob = DeriveEnumerationGlob(this.FileNameFilters);
             RegexOptions caseSensitivity = searchSettings.CaseSensitive ? RegexOptions.None : RegexOptions.IgnoreCase;
             this.FileNameFilterRegex = fileNameFilter.Select(f => new Regex(f, caseSensitivity | RegexOptions.Compiled)).ToArray();
             this.NegativeFileNameFilterRegex = negativeFilenameFilter.Select(f => new Regex(f, caseSensitivity | RegexOptions.Compiled)).ToArray();
@@ -118,6 +123,109 @@ namespace CeeFind.BetterQueue
             this.queue = new PriorityQueue<QueuedDirectory, double>();
             this.preQueue = new Dictionary<long, QueuedDirectory>();
             this.separator = separator;
+        }
+
+        /// <summary>
+        /// The wildcard the filesystem can be asked for instead of listing everything, or
+        /// null when the filters cannot be bounded safely.
+        /// </summary>
+        internal string EnumerationGlob { get; }
+
+        /// <summary>
+        /// Budget for reading directories in full during one search.
+        ///
+        /// Asking the filesystem for only matching names is far cheaper than listing every
+        /// file, but a filtered listing teaches nothing - a directory read as "*.cs" looks
+        /// like it contains nothing but C#. So a bounded number of directories are still
+        /// read in full purely to learn, spent first on places never seen before and then
+        /// tailing off, with a small share reserved for re-examining places already known
+        /// in case they have changed.
+        /// </summary>
+        private const int FullReadBudget = 1000;
+        private const int GuaranteedFullReads = 500;
+        private const double BackoffHalfLife = 250.0;
+        private const double RefreshRate = 1.0 / 6.0;
+
+        private readonly Random sampler = new Random();
+        private int fullReadsUsed;
+        private int unknownDirectoriesSeen;
+
+        /// <summary>
+        /// Whether this directory should be listed in full rather than filtered. A full
+        /// listing is the only thing that can populate the extension profile honestly.
+        /// </summary>
+        internal bool ShouldReadFully(Vertex vertex)
+        {
+            if (EnumerationGlob == null)
+            {
+                return true;
+            }
+
+            if (fullReadsUsed >= FullReadBudget)
+            {
+                return false;
+            }
+
+            bool alreadyObserved = vertex.Extensions != null && vertex.Extensions.Count > 0;
+
+            if (!alreadyObserved)
+            {
+                unknownDirectoriesSeen++;
+
+                if (unknownDirectoriesSeen <= GuaranteedFullReads)
+                {
+                    fullReadsUsed++;
+                    return true;
+                }
+
+                double chance = Math.Pow(0.5, (unknownDirectoriesSeen - GuaranteedFullReads) / BackoffHalfLife);
+                if (sampler.NextDouble() < chance)
+                {
+                    fullReadsUsed++;
+                    return true;
+                }
+
+                return false;
+            }
+
+            if (sampler.NextDouble() < RefreshRate)
+            {
+                fullReadsUsed++;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static string DeriveEnumerationGlob(string[] filters)
+        {
+            if (filters.Length == 0)
+            {
+                return null;
+            }
+
+            string agreed = null;
+
+            foreach (string filter in filters)
+            {
+                string glob = FilterAnalysis.TryGetEnumerationGlob(filter);
+                if (glob == null)
+                {
+                    return null;
+                }
+
+                if (agreed == null)
+                {
+                    agreed = glob;
+                }
+                else if (!string.Equals(agreed, glob, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Different file types wanted; one wildcard cannot cover both.
+                    return null;
+                }
+            }
+
+            return agreed;
         }
 
         public override string ToString()

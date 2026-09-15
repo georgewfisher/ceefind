@@ -388,6 +388,8 @@ namespace CeeFind
                     filter = Regex.Replace(filter, "(?<!\\.)\\*", ".*");
                     warnings.Add(@$"Updating ""*"" in filename search string ""{arg}"" with regular expression ""{filter}"" to make searches easier to write.");
                 }
+
+                filter = FilterAnalysis.EscapeLiteralDots(filter);
             }
 
             return filter;
@@ -581,10 +583,17 @@ namespace CeeFind
                 }
 
                 bool shownDirName = false;
+                bool readFully = queue.ShouldReadFully(directory.Vertex);
 
                 try
                 {
-                    files = directory.Directory.GetFiles();
+                    // Letting the filesystem filter during the directory read avoids
+                    // listing - and name-testing - every file in the tree. A filtered
+                    // listing cannot be learned from, so a bounded share of directories are
+                    // still read in full.
+                    files = readFully || queue.EnumerationGlob == null
+                        ? directory.Directory.GetFiles()
+                        : directory.Directory.GetFiles(queue.EnumerationGlob);
                 }
                 catch (DirectoryNotFoundException)
                 {
@@ -687,8 +696,11 @@ namespace CeeFind
                 int resultCount = metrics.Settings.SearchInFiles ? resultsInFiles : resultsInDirectory;
 
                 // Observing what is here costs nothing - the files are already enumerated -
-                // and it is what lets a later search rule this directory out by file type.
-                queue.RecordDirectoryContents(directory, fileInfoArray.Select(f => f.Extension));
+                // but only a full listing tells the truth about what the directory holds.
+                if (readFully)
+                {
+                    queue.RecordDirectoryContents(directory, fileInfoArray.Select(f => f.Extension));
+                }
 
                 if (resultCount > 0)
                 {

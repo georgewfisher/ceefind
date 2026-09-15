@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace CeeFind.Utils
@@ -109,6 +110,86 @@ namespace CeeFind.Utils
             }
 
             return extensions;
+        }
+
+        /// <summary>
+        /// Makes separator dots literal.
+        ///
+        /// "*.cs" became "^.*.cs$", where the second dot still meant "any character" - so
+        /// the filter also matched "Foocs", and no glob could be derived from it safely.
+        /// A dot introducing a quantifier is left alone, because "." "+" and ".{2}" are
+        /// regular expression intent the user wrote deliberately.
+        /// </summary>
+        internal static string EscapeLiteralDots(string pattern)
+        {
+            if (string.IsNullOrEmpty(pattern))
+            {
+                return pattern;
+            }
+
+            StringBuilder builder = new StringBuilder(pattern.Length + 4);
+
+            for (int i = 0; i < pattern.Length; i++)
+            {
+                char c = pattern[i];
+
+                if (c == '\\' && i + 1 < pattern.Length)
+                {
+                    // Already escaped - copy the pair through untouched.
+                    builder.Append(c).Append(pattern[i + 1]);
+                    i++;
+                    continue;
+                }
+
+                if (c == '.' && !IsQuantifier(i + 1 < pattern.Length ? pattern[i + 1] : '\0'))
+                {
+                    builder.Append("\\.");
+                    continue;
+                }
+
+                builder.Append(c);
+            }
+
+            return builder.ToString();
+        }
+
+        private static bool IsQuantifier(char c)
+        {
+            return c == '*' || c == '+' || c == '?' || c == '{';
+        }
+
+        /// <summary>
+        /// The narrowest wildcard pattern the operating system can be asked for that is
+        /// still guaranteed to include everything the regular expression could match.
+        ///
+        /// Enumerating a directory and testing every name in managed code is the dominant
+        /// cost of a cold search; the filesystem can do most of that filtering during the
+        /// directory read. Correctness rests on the pattern being a superset - the real
+        /// expression is still applied to whatever comes back - so anything that cannot be
+        /// bounded safely returns null and falls back to reading everything.
+        /// </summary>
+        internal static string TryGetEnumerationGlob(string pattern)
+        {
+            string extension = TryGetTargetExtension(pattern);
+            if (extension == null)
+            {
+                return null;
+            }
+
+            // The extension has to be the genuine end of the expression. Anything after it
+            // - a quantifier, an alternation - could allow names that the glob would miss.
+            int end = pattern.Length - 1;
+            if (end >= 0 && pattern[end] == '$')
+            {
+                end--;
+            }
+
+            if (end < 0 || !char.IsLetterOrDigit(pattern[end]))
+            {
+                return null;
+            }
+
+            return "*." + extension;
         }
 
         /// <summary>

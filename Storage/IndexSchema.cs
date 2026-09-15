@@ -15,7 +15,7 @@ namespace CeeFind.Storage
     /// </summary>
     internal static class IndexSchema
     {
-        internal const int SchemaVersion = 7;
+        internal const int SchemaVersion = 8;
 
         internal static SqliteConnection Open(string databasePath)
         {
