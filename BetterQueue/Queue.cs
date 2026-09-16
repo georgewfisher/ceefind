@@ -107,6 +107,14 @@ namespace CeeFind.BetterQueue
         /// </summary>
         private const double MtimeSpreadFloor = 0.7;
 
+        /// <summary>
+        /// Weight given to what a directory is for. Deliberately smaller than the learned
+        /// signals: being a vendored directory is a reason to look later, not a reason to
+        /// override evidence that things have actually been found there.
+        /// </summary>
+        private const double NotAuthoredPenalty = 4.0;
+        private const double AuthoredProjectBoost = 1.5;
+
         private readonly List<string> requiredLiterals;
 
         /// <summary>
@@ -324,6 +332,15 @@ namespace CeeFind.BetterQueue
             Vertex parentVertex = parentDirectory?.Vertex;
             int childDepth = (parentDirectory?.Depth ?? 0) + 1;
 
+            if (parentVertex != null)
+            {
+                // Breadth, and what the children say about the parent - a .git child makes
+                // it a repository root.
+                parentVertex.RecordChildDirectories(subfolders.Length);
+                parentVertex.RecordMarkers((int)DirectorySignature.FromDirectoryNames(
+                    parent.Name, subfolders.Select(s => s.Name)));
+            }
+
             // A subtree walked substantially without ever yielding a result. Vendored and
             // generated trees defeat per-name learning because every child name is unique,
             // so the evidence has to be held against the subtree that contains them.
@@ -355,6 +372,7 @@ namespace CeeFind.BetterQueue
                 score = ApplyModifiedTimePrior(score, subfolder.LastWriteTimeUtc);
                 score = ApplyStructuralPriors(score, childDepth, subfolders.Length);
                 score = ApplyMtimeSpreadPrior(score, vertex);
+                score = ApplyMarkerPrior(score, vertex);
 
                 // A directory thoroughly observed to contain none of the file types being
                 // searched for cannot satisfy this search, whatever its history says. This
@@ -398,6 +416,35 @@ namespace CeeFind.BetterQueue
         /// archives. Spread rather than recency, since a git checkout rewrites the
         /// timestamps of a whole tree and would make every file look equally interesting.
         /// </summary>
+        /// <summary>
+        /// Adjusts by what a directory of this name has been seen to be.
+        ///
+        /// Unlike every other signal here this needs no history at all - a directory
+        /// holding a Cargo.toml is a Rust project the first time it is seen, and one called
+        /// node_modules holds fetched code whether or not anything has ever been found
+        /// there. That is the point: it is the only thing that helps on a repository the
+        /// index has never encountered.
+        ///
+        /// Kept modest. A vendored or generated directory is not empty of interest, just
+        /// less likely to hold what you wrote.
+        /// </summary>
+        private static double ApplyMarkerPrior(double score, Vertex vertex)
+        {
+            DirectoryMarkers markers = (DirectoryMarkers)vertex.Markers;
+
+            if ((markers & DirectoryMarkers.NotAuthored) != 0)
+            {
+                score /= NotAuthoredPenalty;
+            }
+
+            if ((markers & DirectoryMarkers.AuthoredProject) != 0)
+            {
+                score *= AuthoredProjectBoost;
+            }
+
+            return score;
+        }
+
         private static double ApplyMtimeSpreadPrior(double score, Vertex vertex)
         {
             double? spread = vertex.MtimeSpread();
@@ -541,6 +588,14 @@ namespace CeeFind.BetterQueue
                 }
 
                 mtimeDistinct = seconds.Count;
+            }
+
+            // What kind of directory this is, read from the names it holds. Recorded only
+            // against the directory itself: a Node package inside node_modules does not
+            // make its containing repository a Node package.
+            if (filenames != null)
+            {
+                directory.Vertex.RecordMarkers((int)DirectorySignature.FromFileNames(filenames));
             }
 
             Absorb(directory.Vertex, distinct, trigrams, fileCount, mtimeFiles, mtimeDistinct);

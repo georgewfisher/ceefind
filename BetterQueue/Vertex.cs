@@ -131,6 +131,23 @@ namespace CeeFind.BetterQueue
 
         public long MtimeDistinct { get; set; }
 
+        /// <summary>
+        /// What directories of this name have been seen to be - a Node package, a build
+        /// output directory, a repository root. Unioned across every directory sharing the
+        /// name, so it answers "what does this name usually mean here" rather than
+        /// describing one place.
+        /// </summary>
+        public int Markers { get; set; }
+
+        /// <summary>
+        /// Child directory counts, kept as a running total and a sample count so a mean can
+        /// be taken. Breadth is a structural signal in its own right: generated trees fan
+        /// out far wider than authored ones.
+        /// </summary>
+        public long ChildDirTotal { get; set; }
+
+        public long ChildDirSamples { get; set; }
+
         [JsonIgnore]
         public bool IsFilterDirty { get; set; }
 
@@ -284,6 +301,32 @@ namespace CeeFind.BetterQueue
         /// particular type in mind. Only a confident, complete observation that none of the
         /// wanted types has ever appeared here is allowed to say no.
         /// </summary>
+        internal void RecordMarkers(int markers)
+        {
+            if (markers == 0 || (Markers & markers) == markers)
+            {
+                return;
+            }
+
+            Markers |= markers;
+            IsDirty = true;
+        }
+
+        internal void RecordChildDirectories(int count)
+        {
+            ChildDirTotal += count;
+            ChildDirSamples++;
+            IsDirty = true;
+        }
+
+        /// <summary>
+        /// Mean number of child directories, or null when nothing has been observed.
+        /// </summary>
+        internal double? MeanChildDirectories()
+        {
+            return ChildDirSamples == 0 ? null : (double)ChildDirTotal / ChildDirSamples;
+        }
+
         internal void RecordMtimeSpread(int fileCount, int distinctTimestamps)
         {
             if (fileCount <= 0)

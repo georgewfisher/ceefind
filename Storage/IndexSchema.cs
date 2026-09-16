@@ -15,7 +15,7 @@ namespace CeeFind.Storage
     /// </summary>
     internal static class IndexSchema
     {
-        internal const int SchemaVersion = 10;
+        internal const int SchemaVersion = 11;
 
         internal static SqliteConnection Open(string databasePath)
         {
@@ -99,7 +99,10 @@ CREATE TABLE IF NOT EXISTS vertex (
     name_filter     BLOB NULL,
     filter_files    INTEGER NOT NULL DEFAULT 0,
     mtime_files     INTEGER NOT NULL DEFAULT 0,
-    mtime_distinct  INTEGER NOT NULL DEFAULT 0
+    mtime_distinct  INTEGER NOT NULL DEFAULT 0,
+    markers         INTEGER NOT NULL DEFAULT 0,
+    child_dir_total INTEGER NOT NULL DEFAULT 0,
+    child_dir_samples INTEGER NOT NULL DEFAULT 0
 );
 
 -- Retention is evidence-based, so these partial indexes split the two tiers pruning

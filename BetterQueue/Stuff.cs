@@ -104,7 +104,7 @@ namespace CeeFind.BetterQueue
             command.CommandText =
                 "SELECT name, visits, find_count, last_find_utc, histogram_json, adjacents_json, path_count, " +
                 "subtree_visits, subtree_finds, extensions_json, extensions_truncated, subtree_finds_by_type, " +
-                "name_filter, filter_files, mtime_files, mtime_distinct " +
+                "name_filter, filter_files, mtime_files, mtime_distinct, markers, child_dir_total, child_dir_samples " +
                 "FROM vertex WHERE name = $name LIMIT 1;";
             command.Parameters.AddWithValue("$name", name);
 
@@ -143,6 +143,9 @@ namespace CeeFind.BetterQueue
                 FilterFileCount = reader.GetInt64(13),
                 MtimeFiles = reader.GetInt64(14),
                 MtimeDistinct = reader.GetInt64(15),
+                Markers = reader.GetInt32(16),
+                ChildDirTotal = reader.GetInt64(17),
+                ChildDirSamples = reader.GetInt64(18),
                 ArePathsLoaded = false,
                 IsDirty = false,
             };
@@ -669,8 +672,8 @@ namespace CeeFind.BetterQueue
             using SqliteCommand command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = @"
-INSERT INTO vertex (name, visits, find_count, last_find_utc, histogram_json, adjacents_json, path_count, subtree_visits, subtree_finds, extensions_json, extensions_truncated, subtree_finds_by_type, name_filter, filter_files, mtime_files, mtime_distinct)
-VALUES ($name, $visits, $findCount, $lastFind, $histogram, $adjacents, $pathCount, $subtreeVisits, $subtreeFinds, $extensions, $truncated, $findsByType, $nameFilter, $filterFiles, $mtimeFiles, $mtimeDistinct)
+INSERT INTO vertex (name, visits, find_count, last_find_utc, histogram_json, adjacents_json, path_count, subtree_visits, subtree_finds, extensions_json, extensions_truncated, subtree_finds_by_type, name_filter, filter_files, mtime_files, mtime_distinct, markers, child_dir_total, child_dir_samples)
+VALUES ($name, $visits, $findCount, $lastFind, $histogram, $adjacents, $pathCount, $subtreeVisits, $subtreeFinds, $extensions, $truncated, $findsByType, $nameFilter, $filterFiles, $mtimeFiles, $mtimeDistinct, $markers, $childDirTotal, $childDirSamples)
 ON CONFLICT(name) DO UPDATE SET
     visits         = excluded.visits,
     find_count     = excluded.find_count,
@@ -686,7 +689,10 @@ ON CONFLICT(name) DO UPDATE SET
     name_filter    = COALESCE(excluded.name_filter, vertex.name_filter),
     filter_files   = excluded.filter_files,
     mtime_files    = excluded.mtime_files,
-    mtime_distinct = excluded.mtime_distinct;";
+    mtime_distinct = excluded.mtime_distinct,
+    markers        = vertex.markers | excluded.markers,
+    child_dir_total = excluded.child_dir_total,
+    child_dir_samples = excluded.child_dir_samples;";
 
             command.Parameters.AddWithValue("$name", vertex.Name);
             command.Parameters.AddWithValue("$visits", vertex.Visits);
@@ -727,6 +733,9 @@ ON CONFLICT(name) DO UPDATE SET
             command.Parameters.AddWithValue("$filterFiles", vertex.FilterFileCount);
             command.Parameters.AddWithValue("$mtimeFiles", vertex.MtimeFiles);
             command.Parameters.AddWithValue("$mtimeDistinct", vertex.MtimeDistinct);
+            command.Parameters.AddWithValue("$markers", vertex.Markers);
+            command.Parameters.AddWithValue("$childDirTotal", vertex.ChildDirTotal);
+            command.Parameters.AddWithValue("$childDirSamples", vertex.ChildDirSamples);
 
             command.ExecuteNonQuery();
         }
