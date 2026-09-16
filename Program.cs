@@ -710,7 +710,8 @@ namespace CeeFind
                     queue.RecordDirectoryContents(
                         directory,
                         fileInfoArray.Select(f => f.Extension),
-                        fileInfoArray.Select(f => f.Name));
+                        fileInfoArray.Select(f => f.Name),
+                        fileInfoArray.Select(f => f.LastWriteTimeUtc));
                 }
 
                 if (resultCount > 0)

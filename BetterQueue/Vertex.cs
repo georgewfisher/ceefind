@@ -115,6 +115,22 @@ namespace CeeFind.BetterQueue
         /// </summary>
         public long FilterFileCount { get; set; }
 
+        /// <summary>
+        /// How varied the modification times of files beneath this directory are.
+        ///
+        /// Learned without searching for anything: the walk already holds every file's
+        /// timestamp. Content written as a block - extracted archives, build output,
+        /// installed packages - shares timestamps, while a directory somebody works in
+        /// accumulates varied ones as individual files change.
+        ///
+        /// Spread rather than recency, because recency is not trustworthy here: a git
+        /// checkout rewrites the timestamps of an entire tree at once, which would make
+        /// every file in a freshly cloned repository look equally interesting.
+        /// </summary>
+        public long MtimeFiles { get; set; }
+
+        public long MtimeDistinct { get; set; }
+
         [JsonIgnore]
         public bool IsFilterDirty { get; set; }
 
@@ -268,6 +284,30 @@ namespace CeeFind.BetterQueue
         /// particular type in mind. Only a confident, complete observation that none of the
         /// wanted types has ever appeared here is allowed to say no.
         /// </summary>
+        internal void RecordMtimeSpread(int fileCount, int distinctTimestamps)
+        {
+            if (fileCount <= 0)
+            {
+                return;
+            }
+
+            MtimeFiles += fileCount;
+            MtimeDistinct += distinctTimestamps;
+            IsDirty = true;
+        }
+
+        /// <summary>
+        /// Proportion of distinct modification times among the files seen beneath this
+        /// directory. Near zero means everything was written at once. Null when too little
+        /// has been observed to say.
+        /// </summary>
+        internal double? MtimeSpread()
+        {
+            return MtimeFiles < MinimumMtimeEvidence ? null : (double)MtimeDistinct / MtimeFiles;
+        }
+
+        private const long MinimumMtimeEvidence = 40;
+
         internal bool CouldContainAny(HashSet<string> wanted)
         {
             if (wanted == null || wanted.Count == 0)

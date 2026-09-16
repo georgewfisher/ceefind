@@ -100,6 +100,13 @@ namespace CeeFind.BetterQueue
         /// </summary>
         private const int ParentFindLevels = 2;
 
+        /// <summary>
+        /// Floor of the modification-spread multiplier. A subtree whose timestamps never
+        /// vary keeps 70% of its score; one that varies freely gains a little. Deliberately
+        /// narrow - this is a hint, not a verdict.
+        /// </summary>
+        private const double MtimeSpreadFloor = 0.7;
+
         private readonly List<string> requiredLiterals;
 
         /// <summary>
@@ -347,6 +354,7 @@ namespace CeeFind.BetterQueue
                 score = GenerateScore(vertex, vertex, score, 0);
                 score = ApplyModifiedTimePrior(score, subfolder.LastWriteTimeUtc);
                 score = ApplyStructuralPriors(score, childDepth, subfolders.Length);
+                score = ApplyMtimeSpreadPrior(score, vertex);
 
                 // A directory thoroughly observed to contain none of the file types being
                 // searched for cannot satisfy this search, whatever its history says. This
@@ -375,6 +383,33 @@ namespace CeeFind.BetterQueue
         /// among its siblings. One of six hundred siblings is individually less likely to be
         /// what you want than one of three, and generated trees are both deep and wide.
         /// </summary>
+        /// <summary>
+        /// Nudges directories by how varied the modification times beneath them are.
+        ///
+        /// Somewhere worked in accumulates varied timestamps; content that arrives in bulk
+        /// does not. Learned without any search having to succeed, which is what makes it
+        /// useful on a tree nothing is known about yet.
+        ///
+        /// Applied weakly and continuously, because the separation measured on real trees is
+        /// real but modest: node_modules came out at 0.29 against 0.51 to 0.86 for source.
+        /// An earlier threshold at 0.1 would never have fired at all - npm preserves each
+        /// package's own publish timestamps rather than writing everything at once, so the
+        /// "written in one act" intuition only holds for build output and extracted
+        /// archives. Spread rather than recency, since a git checkout rewrites the
+        /// timestamps of a whole tree and would make every file look equally interesting.
+        /// </summary>
+        private static double ApplyMtimeSpreadPrior(double score, Vertex vertex)
+        {
+            double? spread = vertex.MtimeSpread();
+            if (spread == null)
+            {
+                return score;
+            }
+
+            double clamped = Math.Clamp(spread.Value, 0.0, 1.0);
+            return score * (MtimeSpreadFloor + ((1.0 - MtimeSpreadFloor) * 2.0 * clamped));
+        }
+
         private static double ApplyStructuralPriors(double score, int depth, int siblingCount)
         {
             score = AdjustScoreForRarity(score, siblingCount);
@@ -457,7 +492,10 @@ namespace CeeFind.BetterQueue
         /// enough to carry one.
         /// </summary>
         public void RecordDirectoryContents(
-            QueuedDirectory directory, IEnumerable<string> extensions, IEnumerable<string> filenames)
+            QueuedDirectory directory,
+            IEnumerable<string> extensions,
+            IEnumerable<string> filenames,
+            IEnumerable<DateTime> modifiedTimes = null)
         {
             HashSet<string> distinct = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (string raw in extensions)
@@ -489,7 +527,23 @@ namespace CeeFind.BetterQueue
                 return;
             }
 
-            Absorb(directory.Vertex, distinct, trigrams, fileCount);
+            // Timestamps rounded to the second: what matters is whether these files were
+            // written as one act or at different times.
+            int mtimeFiles = 0;
+            int mtimeDistinct = 0;
+            if (modifiedTimes != null)
+            {
+                HashSet<long> seconds = new HashSet<long>();
+                foreach (DateTime modified in modifiedTimes)
+                {
+                    mtimeFiles++;
+                    seconds.Add(modified.Ticks / TimeSpan.TicksPerSecond);
+                }
+
+                mtimeDistinct = seconds.Count;
+            }
+
+            Absorb(directory.Vertex, distinct, trigrams, fileCount, mtimeFiles, mtimeDistinct);
 
             int currentParentHash = directory.Parent;
             int guard = 0;
@@ -500,12 +554,14 @@ namespace CeeFind.BetterQueue
                     break;
                 }
 
-                Absorb(ancestor.Vertex, distinct, trigrams, fileCount);
+                Absorb(ancestor.Vertex, distinct, trigrams, fileCount, mtimeFiles, mtimeDistinct);
                 currentParentHash = ancestor.Parent;
             }
         }
 
-        private static void Absorb(Vertex vertex, HashSet<string> extensions, HashSet<int> trigrams, int fileCount)
+        private static void Absorb(
+            Vertex vertex, HashSet<string> extensions, HashSet<int> trigrams,
+            int fileCount, int mtimeFiles, int mtimeDistinct)
         {
             // Ordered deliberately. Set iteration order follows randomised string hashing,
             // so an unordered walk decided which extensions survived the per-vertex cap
@@ -515,6 +571,8 @@ namespace CeeFind.BetterQueue
             {
                 vertex.RecordExtension(extension);
             }
+
+            vertex.RecordMtimeSpread(mtimeFiles, mtimeDistinct);
 
             if (trigrams == null || fileCount == 0)
             {
@@ -665,9 +723,9 @@ namespace CeeFind.BetterQueue
                 }
             }
 
-            if (vertex.LastFindCount != null)
+            if (vertex.LastFindCount != null && !vertex.LastFindCount.IsEmpty)
             {
-                score = vertex.LastFindCount.Count > 0 ? AdjustScoreForRarity(score, vertex.LastFindCount.Average()) : score;
+                score = AdjustScoreForRarity(score, vertex.LastFindCount.Average());
             }
             if (vertex.PathCount > 0)
             {
