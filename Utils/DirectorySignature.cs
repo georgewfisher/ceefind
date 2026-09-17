@@ -50,15 +50,35 @@ namespace CeeFind.Utils
         GitInternals = 1 << 17,
 
         /// <summary>
-        /// Markers naming somebody's own project, as opposed to what was fetched or
-        /// generated for it.
+        /// Markers naming somebody's own project.
+        ///
+        /// NodePackage is deliberately absent. Every package inside node_modules carries a
+        /// package.json, so the marker tags overwhelmingly fetched code - measured across
+        /// 70,414 visits it scores 1.19 against the global rate, meaning it says nothing.
+        /// It marks "a JS package", not "a JS project of yours".
         /// </summary>
         AuthoredProject =
-            NodePackage | DotNetProject | DotNetSolution | Maven | Gradle |
+            DotNetProject | DotNetSolution | Maven | Gradle |
             Rust | Go | Python | TypeScript | Make | CMake,
 
-        /// <summary>Markers naming content that arrived rather than being written.</summary>
-        NotAuthored = Generated | Vendored | BuildOutput | GitInternals,
+        /// <summary>
+        /// Markers of the top of something somebody works on. Measured as by far the
+        /// strongest positive signal available - a repository root scored 112 times the
+        /// global rate and a lockfile 97 - which makes sense: it is where authored code
+        /// begins, and both were previously given no weight at all.
+        /// </summary>
+        ProjectRoot = GitRepository | Lockfile,
+
+        /// <summary>
+        /// Markers of content that is written by tooling and searched by nobody. Measured
+        /// across 16,978 visits these produced not one result.
+        ///
+        /// Vendored and Generated are deliberately absent despite the intuition. Measured
+        /// on searches that actually express a preference they are ordinary - 1.40 and 1.28
+        /// against global - so penalising them was punishing directories for being large
+        /// rather than for being unhelpful.
+        /// </summary>
+        BarrenOutput = BuildOutput | GitInternals,
     }
 
     internal static class DirectorySignature

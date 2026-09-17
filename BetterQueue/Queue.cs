@@ -108,12 +108,15 @@ namespace CeeFind.BetterQueue
         private const double MtimeSpreadFloor = 0.7;
 
         /// <summary>
-        /// Weight given to what a directory is for. Deliberately smaller than the learned
-        /// signals: being a vendored directory is a reason to look later, not a reason to
-        /// override evidence that things have actually been found there.
+        /// Weights for what a directory is for, derived from measured hit rates against
+        /// selective searches and then clamped hard. The raw ratios reached 218 for a
+        /// solution file and 112 for a repository root, which would drown out every other
+        /// signal and rest on very few observations; these keep the ordering the evidence
+        /// gives without letting one marker decide a search on its own.
         /// </summary>
-        private const double NotAuthoredPenalty = 4.0;
-        private const double AuthoredProjectBoost = 1.5;
+        private const double BarrenOutputPenalty = 8.0;
+        private const double ProjectRootBoost = 4.0;
+        private const double AuthoredProjectBoost = 2.0;
 
         private readonly List<string> requiredLiterals;
 
@@ -420,21 +423,30 @@ namespace CeeFind.BetterQueue
         /// Adjusts by what a directory of this name has been seen to be.
         ///
         /// Unlike every other signal here this needs no history at all - a directory
-        /// holding a Cargo.toml is a Rust project the first time it is seen, and one called
-        /// node_modules holds fetched code whether or not anything has ever been found
-        /// there. That is the point: it is the only thing that helps on a repository the
-        /// index has never encountered.
+        /// holding a Cargo.toml is a Rust project the first time it is seen. That is the
+        /// point: it is the only thing that helps on a repository the index has never met.
         ///
-        /// Kept modest. A vendored or generated directory is not empty of interest, just
-        /// less likely to hold what you wrote.
+        /// The weights are derived from measurement rather than intuition, and the
+        /// measurement had to be earned. Judged across searches that sweep a whole file
+        /// type, node_modules appears better than average - 99.8% of this machine's .js
+        /// files live there, so a sweep genuinely does find them in it. Only searches
+        /// selective enough to express a preference say anything about where a person
+        /// wants to be sent, and against those the picture inverts: build output produced
+        /// nothing at all across 16,533 visits, while repository roots and lockfiles - to
+        /// which nothing was previously given - led the field.
         /// </summary>
         private static double ApplyMarkerPrior(double score, Vertex vertex)
         {
             DirectoryMarkers markers = (DirectoryMarkers)vertex.Markers;
 
-            if ((markers & DirectoryMarkers.NotAuthored) != 0)
+            if ((markers & DirectoryMarkers.BarrenOutput) != 0)
             {
-                score /= NotAuthoredPenalty;
+                score /= BarrenOutputPenalty;
+            }
+
+            if ((markers & DirectoryMarkers.ProjectRoot) != 0)
+            {
+                score *= ProjectRootBoost;
             }
 
             if ((markers & DirectoryMarkers.AuthoredProject) != 0)
