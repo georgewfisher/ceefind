@@ -30,7 +30,37 @@ namespace CeeFind
         {
         }
 
-        private static void Main(string[] args)
+        /// <summary>
+        /// Exit codes follow the convention of grep and find, so that CeeFind can be used
+        /// in a script. Previously every path returned zero, including an unhandled
+        /// exception, so a caller could not tell success from a crash.
+        /// </summary>
+        private const int ExitFound = 0;
+        private const int ExitNothingFound = 1;
+        private const int ExitUsageError = 2;
+
+        private static int Main(string[] args)
+        {
+            try
+            {
+                return Run(args);
+            }
+            catch (RegexParseException ex)
+            {
+                // A malformed pattern is the user's typo, not a fault. Reporting it as a
+                // stack trace told them nothing and still exited zero.
+                Console.Error.WriteLine($"ceefind: the search pattern could not be understood - {ex.Message}");
+                Console.Error.WriteLine("Try -r to use the pattern as a pure regular expression, or see -help.");
+                return ExitUsageError;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"ceefind: {ex.Message}");
+                return ExitUsageError;
+            }
+        }
+
+        private static int Run(string[] args)
         {
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
@@ -66,6 +96,16 @@ namespace CeeFind
             bool filenamePart = true;
             bool isNegated = false;
             List<string> warnings = new List<string>();
+
+            // Nothing to search for, or an explicit request: show how to use the tool.
+            // Without this, `f` alone listed the whole directory and `f --help` searched
+            // for a file called --help.
+            if (args.Length == 0 || args.Any(IsHelpRequest))
+            {
+                Help.Show();
+                return args.Length == 0 ? ExitUsageError : ExitFound;
+            }
+
             for (int i = 0; i < (int)strArrays.Length; i++)
             {
                 string arg = strArrays[i];
@@ -130,6 +170,12 @@ namespace CeeFind
                         case "n":
                             settings.IgnoreNewLines = true;
                             break;
+                        default:
+                            // Silently treating an unrecognised flag as a filter meant a
+                            // typo quietly changed what was searched for.
+                            Console.Error.WriteLine($"ceefind: unknown option '{arg}'");
+                            Console.Error.WriteLine("Run 'f -help' to see the available options.");
+                            return ExitUsageError;
                     }
                 }
                 else if (filenamePart && arg == "not")
@@ -232,7 +278,7 @@ namespace CeeFind
             if (settings.ShowHistory)
             {
                 ShowHistory(stuff, rootDirectory);
-                return;
+                return ExitFound;
             }
 
             queue = new CeeFindQueue(directorySeparator, stuff, rootDirectory, filenameFilterRegex, negativeFilenameFilterRegex, inFileSearchStrings, settings);
@@ -287,6 +333,31 @@ namespace CeeFind
             }
 
             Finish(stuff, rootDirectory, false, !queue.IsMore(), true, stateFile, metrics);
+
+            // What the caller actually wants to know: was anything found?
+            bool found = settings.SearchInFiles
+                ? metrics.FileMatchInsideCount > 0
+                : metrics.FileMatchCount > 0;
+
+            return found ? ExitFound : ExitNothingFound;
+        }
+
+        private static bool IsHelpRequest(string arg)
+        {
+            switch (arg.ToLowerInvariant())
+            {
+                case "-h":
+                    // Deliberately absent: -h has always meant history here.
+                    return false;
+                case "-help":
+                case "--help":
+                case "-?":
+                case "/?":
+                case "help":
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         /// <summary>
@@ -461,9 +532,9 @@ namespace CeeFind
                 }
 
                 stuff.Dispose();
-                Environment.Exit(0);
             }
         }
+
         private static void TopExtensionsReport(Metrics metrics)
         {
             GenerateExtensionReport(

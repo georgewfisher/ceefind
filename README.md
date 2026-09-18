@@ -144,3 +144,19 @@ This includes:
 |-json|Dump the current index out as `state.json`|
 |-r<br />-regex|Use pure regular expressions, no conversion|
 |-n<br />-ignorenewlines|Read entire files, including newlines|
+|-help<br />--help<br />-?|Show usage|
+
+### Exit codes
+
+|Code|Meaning|
+|-|-|
+|0|Something was found|
+|1|Nothing matched|
+|2|The command could not be understood|
+
+These follow the convention used by `grep` and `find`, so CeeFind can be used in a
+script:
+
+```
+f *.config connectionString && echo "found one"
+```
