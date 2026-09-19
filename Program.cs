@@ -364,9 +364,27 @@ namespace CeeFind
         /// Returns the per-user directory used to persist the index. Writing next to the
         /// executable fails when CeeFind is installed to a read-only location such as
         /// Program Files or an MSIX package root.
+        ///
+        /// CEEFIND_INDEX overrides it. That exists so that testing cannot destroy a real
+        /// index: the accumulated knowledge is the whole value of the tool, and a harness
+        /// that resets state between runs would otherwise wipe it on every execution.
         /// </summary>
         private static string GetStateDirectory()
         {
+            string overridden = Environment.GetEnvironmentVariable("CEEFIND_INDEX");
+            if (!string.IsNullOrWhiteSpace(overridden))
+            {
+                try
+                {
+                    Directory.CreateDirectory(overridden);
+                    return overridden;
+                }
+                catch (Exception)
+                {
+                    // Fall through to the default rather than failing the search.
+                }
+            }
+
             string root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             if (string.IsNullOrEmpty(root))
             {
