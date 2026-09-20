@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json.Serialization;
 
 namespace CeeFind.BetterQueue
@@ -234,8 +235,30 @@ namespace CeeFind.BetterQueue
         internal void RecordSubtreeVisit()
         {
             SubtreeVisits++;
+
+            // Evidence is capped rather than accumulated without limit. These counters are
+            // totals across every search ever run, so on a large tree they reach millions -
+            // WinSxS recorded 1,348,304 visits - and once the denominator is that large no
+            // amount of later success can move the ratio. Halving both sides keeps their
+            // meaning while letting recent behaviour still count for something.
+            if (SubtreeVisits > MaxSubtreeEvidence)
+            {
+                SubtreeVisits /= 2;
+                SubtreeFinds /= 2;
+
+                if (SubtreeFindsByType != null)
+                {
+                    foreach (string key in SubtreeFindsByType.Keys.ToList())
+                    {
+                        SubtreeFindsByType[key] /= 2;
+                    }
+                }
+            }
+
             IsDirty = true;
         }
+
+        private const long MaxSubtreeEvidence = 100_000;
 
         internal void RecordSubtreeFind(HashSet<string> types)
         {

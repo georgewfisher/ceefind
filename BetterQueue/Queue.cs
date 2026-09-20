@@ -494,9 +494,14 @@ namespace CeeFind.BetterQueue
                 }
                 UpdateAdjacents(depth, currentQueuedDirectory, startVertex);
 
-                // Credit the whole containing chain, so a subtree that does produce results
-                // is never mistaken for noise.
-                currentQueuedDirectory.Vertex.RecordSubtreeFind(targetExtensions);
+                // Credit the containing chain, so a subtree that does produce results is
+                // never mistaken for noise. Bounded to the same depth visits are charged
+                // to: the two counters are divided by each other, so they have to be
+                // measured over the same span or the ratio means nothing.
+                if (depth <= ParentFindLevels)
+                {
+                    currentQueuedDirectory.Vertex.RecordSubtreeFind(targetExtensions);
+                }
 
                 currentParentHash = currentQueuedDirectory.Parent;
                 depth++;
@@ -508,13 +513,19 @@ namespace CeeFind.BetterQueue
         /// children are unknowable - vendored trees name every child differently - but the
         /// containing directory accumulates a very clear picture of whether looking inside
         /// it has ever been worth the effort.
+        ///
+        /// The depth walked has to match the depth finds are credited to, or the two
+        /// counters measure different things and their ratio is meaningless. Charging
+        /// visits 64 levels up while crediting finds only 2 made every large subtree look
+        /// barren: WinSxS accumulated 1,348,304 visits against 25 finds in a tree of
+        /// 152,882 directories, and was demoted to near zero despite working.
         /// </summary>
         private void RecordSubtreeVisit(int parentHash)
         {
             int currentParentHash = parentHash;
-            int guard = 0;
+            int level = 0;
 
-            while (currentParentHash != RootHash && guard++ < MaxAncestorWalk)
+            while (currentParentHash != RootHash && level++ < ParentFindLevels)
             {
                 if (!done.TryGetValue(currentParentHash, out QueuedDirectory ancestor))
                 {
