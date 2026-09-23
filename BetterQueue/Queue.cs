@@ -283,6 +283,26 @@ namespace CeeFind.BetterQueue
             return agreed;
         }
 
+        /// <summary>
+        /// Cheap equivalent of the enumeration wildcard, for filtering a listing that was
+        /// read in one pass.
+        ///
+        /// The wildcard is always of the form '*.ext', so a suffix test is exactly
+        /// equivalent and costs a fraction of a regular expression. Asking the filesystem
+        /// to filter meant enumerating the directory twice - once for files and once for
+        /// subdirectories - which measured slower than reading it once and filtering here.
+        /// </summary>
+        internal bool PassesEnumerationFilter(string fileName)
+        {
+            if (EnumerationGlob == null)
+            {
+                return true;
+            }
+
+            // EnumerationGlob is "*.ext"; compare the part after the star.
+            return fileName.AsSpan().EndsWith(EnumerationGlob.AsSpan(1), StringComparison.OrdinalIgnoreCase);
+        }
+
         public override string ToString()
         {
             string filesPositive = String.Join(" && ", FileNameFilterRegex.Select(r => r.ToString()));
