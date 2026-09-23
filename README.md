@@ -34,6 +34,41 @@ Smart:
 
 2. Add the output directory to your `PATH` environment variable.
 
+3. Set up the shell integration (see below).
+
+## Shell integration
+
+`c` changes the directory of the shell you are in. No program can do that — a
+process can only change its own directory — so `c` has to be a function inside
+the shell itself rather than an executable.
+
+Run `ceefind init` for the instructions, or add the line for your shell directly:
+
+**PowerShell** — add to `$PROFILE`:
+
+```powershell
+ceefind init powershell | Out-String | Invoke-Expression
+```
+
+**Bash or Zsh** — add to `~/.bashrc` or `~/.zshrc`:
+
+```bash
+eval "$(ceefind init bash)"
+```
+
+**Cmd** — save the macros and load them from AutoRun:
+
+```bat
+ceefind init cmd > "%USERPROFILE%\ceefind.cmd"
+reg add "HKCU\Software\Microsoft\Command Processor" /v AutoRun ^
+    /t REG_EXPAND_SZ /d "%USERPROFILE%\ceefind.cmd" /f
+```
+
+This works however CeeFind was installed, because the generated function calls
+`ceefind` by name. The `c.cmd`, `c.ps1`, `f.cmd` and `cx.cmd` files in the build
+output do the same job for a plain folder install, but cannot be used by a
+packaged install, which can only register executables.
+
 ## Stored data
 
 CeeFind keeps its index and search history in a SQLite database in a per-user directory:

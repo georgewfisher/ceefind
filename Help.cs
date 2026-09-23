@@ -54,6 +54,11 @@ EXIT CODES
   1  nothing matched
   2  the command could not be understood
 
+SHELL INTEGRATION
+  c changes the directory of the shell you are in, which only the shell can do,
+  so it has to be a function rather than a program. Run 'ceefind init' to see how
+  to set that up for your shell.
+
 CeeFind remembers where it found things and looks there first next time. The index
 lives in %LOCALAPPDATA%\CeeFind and can be deleted at any time.");
         }

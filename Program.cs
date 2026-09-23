@@ -116,6 +116,19 @@ namespace CeeFind
                 return args.Length == 0 ? ExitUsageError : ExitFound;
             }
 
+            // Shell integration. Handled before anything else because it is a request to
+            // print text, not to search - and it must work before any index exists.
+            if (string.Equals(args[0], "init", StringComparison.OrdinalIgnoreCase))
+            {
+                if (args.Length < 2)
+                {
+                    ShellInit.ShowInstructions();
+                    return ExitFound;
+                }
+
+                return ShellInit.Emit(args[1]);
+            }
+
             for (int i = 0; i < (int)strArrays.Length; i++)
             {
                 string arg = strArrays[i];
