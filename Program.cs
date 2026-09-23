@@ -321,14 +321,19 @@ namespace CeeFind
             }
             if (settings.IsVerbose)
             {
+                // Thousands separators and a sensible number of decimal places: these are
+                // read by a person, and '0.0636436s' or '227243' take a moment to parse.
+                string scanned = $"Found {metrics.FileCount:N0} files over {metrics.DirectoryCount:N0} directories";
+                string timing = $"Scan time {FormatDuration(metrics.Duration)}. Efficiency {metrics.OverallEfficiency:N0}%.";
+
                 if (settings.SearchInFiles)
                 {
                     TopExtensionsReport(metrics);
-                    Console.WriteLine($"Found {metrics.FileCount} files over {metrics.DirectoryCount} directories, of which {metrics.FileMatchCount} were opened, which resulted in {metrics.FileMatchInsideCount} file matches and {metrics.MatchRowCount} lines matched. Scan time {metrics.Duration.TotalSeconds}s. Efficiency {metrics.OverallEfficiency}%.");
+                    Console.WriteLine($"{scanned}, of which {metrics.FileMatchCount:N0} were opened, which resulted in {metrics.FileMatchInsideCount:N0} file matches and {metrics.MatchRowCount:N0} lines matched. {timing}");
                 }
                 else
                 {
-                    Console.WriteLine($"Found {metrics.FileCount} files over {metrics.DirectoryCount} directories, of which {metrics.FileMatchCount} were matches. Scan time {metrics.Duration.TotalSeconds}s. Efficiency {metrics.OverallEfficiency}%.");
+                    Console.WriteLine($"{scanned}, of which {metrics.FileMatchCount:N0} were matches. {timing}");
                 }
             }
 
@@ -340,6 +345,22 @@ namespace CeeFind
                 : metrics.FileMatchCount > 0;
 
             return found ? ExitFound : ExitNothingFound;
+        }
+
+        /// <summary>
+        /// A duration at a precision worth reading. Sub-second timings were printed to
+        /// seven decimal places.
+        /// </summary>
+        private static string FormatDuration(TimeSpan duration)
+        {
+            if (duration.TotalSeconds < 1)
+            {
+                return $"{duration.TotalMilliseconds:N0}ms";
+            }
+
+            return duration.TotalSeconds < 60
+                ? $"{duration.TotalSeconds:N1}s"
+                : $"{(int)duration.TotalMinutes}m {duration.Seconds}s";
         }
 
         private static bool IsHelpRequest(string arg)
@@ -1154,8 +1175,11 @@ namespace CeeFind
                                 string formattedPath = file.Directory.FullName.Replace(rootDirectory.FullName, string.Empty);
                                 if (formattedPath.Length > 1)
                                 {
+                                    // A trailing separator marks this as a directory
+                                    // heading rather than another match. Printed bare it
+                                    // read as a stray word between results.
                                     Console.ForegroundColor = ConsoleColor.DarkGray;
-                                    Console.WriteLine(formattedPath.Substring(1));
+                                    Console.WriteLine(formattedPath.Substring(1) + Path.DirectorySeparatorChar);
                                     Console.ResetColor();
                                     showDirName = true;
                                 }
@@ -1169,8 +1193,14 @@ namespace CeeFind
                                 string capturedItem = line.Substring(result.Index, result.Length);
 
                                 lastPart = (result.Index + result.Length <= line.Length ? line.Substring(result.Index + result.Length) : string.Empty);
-                                firstPart = firstPart.TrimStart(new char[0]);
-                                lastPart = lastPart.TrimEnd(new char[0]);
+
+                                // Only the outer edges are trimmed. Trimming the inner
+                                // edges - the characters adjacent to the match - removed
+                                // the space either side of it, so 'public Histogram
+                                // LastFindCount' was printed as 'public HistogramLast-
+                                // FindCount'. The tool was misreporting file contents.
+                                firstPart = firstPart.TrimStart();
+                                lastPart = lastPart.TrimEnd();
 
                                 string prefix = metrics.Settings.IgnoreNewLines
                                     ? string.Format("{0} ({1}-{2}):", file.Name, result.Index, result.Index + capturedItem.Length).PadRight(35, ' ')
@@ -1180,7 +1210,7 @@ namespace CeeFind
                                 // column survives. A long match or a minified line could
                                 // previously emit several hundred characters and wrap.
                                 (firstPart, capturedItem, lastPart) =
-                                    ConsoleLayout.Fit(firstPart, capturedItem, lastPart.Trim(), prefix.Length);
+                                    ConsoleLayout.Fit(firstPart, capturedItem, lastPart, prefix.Length);
 
                                 Console.Write(string.Concat(prefix, firstPart));
                                 Console.ForegroundColor = ConsoleColor.White;
