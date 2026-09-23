@@ -1171,26 +1171,22 @@ namespace CeeFind
                                 lastPart = (result.Index + result.Length <= line.Length ? line.Substring(result.Index + result.Length) : string.Empty);
                                 firstPart = firstPart.TrimStart(new char[0]);
                                 lastPart = lastPart.TrimEnd(new char[0]);
-                                if (firstPart.Length > 100)
-                                {
-                                    firstPart = string.Concat("...", firstPart.Substring(firstPart.Length - 30));
-                                }
-                                if (lastPart.Length > 100)
-                                {
-                                    lastPart = string.Concat(lastPart.Substring(0, 30), "...");
-                                }
-                                if (metrics.Settings.IgnoreNewLines)
-                                {
-                                    Console.Write(string.Concat(string.Format("{0} ({1}-{2}):", file.Name, result.Index, result.Index + capturedItem.Length).PadRight(35, ' '), firstPart));
-                                }
-                                else
-                                {
-                                    Console.Write(string.Concat(string.Format("{0} ({1},{2}):", file.Name, lineCount, result.Index).PadRight(35, ' '), firstPart));
-                                }
+
+                                string prefix = metrics.Settings.IgnoreNewLines
+                                    ? string.Format("{0} ({1}-{2}):", file.Name, result.Index, result.Index + capturedItem.Length).PadRight(35, ' ')
+                                    : string.Format("{0} ({1},{2}):", file.Name, lineCount, result.Index).PadRight(35, ' ');
+
+                                // Fit the line to the terminal, so the aligned filename
+                                // column survives. A long match or a minified line could
+                                // previously emit several hundred characters and wrap.
+                                (firstPart, capturedItem, lastPart) =
+                                    ConsoleLayout.Fit(firstPart, capturedItem, lastPart.Trim(), prefix.Length);
+
+                                Console.Write(string.Concat(prefix, firstPart));
                                 Console.ForegroundColor = ConsoleColor.White;
                                 Console.Write(capturedItem);
                                 Console.ResetColor();
-                                Console.WriteLine(lastPart.Trim());
+                                Console.WriteLine(lastPart);
                             }
 
                             stuff.AddThing(
