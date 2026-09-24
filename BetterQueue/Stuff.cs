@@ -80,8 +80,6 @@ namespace CeeFind.BetterQueue
         private readonly List<(string VertexName, string Path)> pendingPathDeletes =
             new List<(string, string)>();
 
-        private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions();
-
         internal Stuff(string databasePath)
         {
             this.connection = IndexSchema.Open(databasePath);
@@ -123,22 +121,22 @@ namespace CeeFind.BetterQueue
                 LastFindUtc = reader.IsDBNull(3) ? null : FromUnix(reader.GetInt64(3)),
                 LastFindCount = reader.IsDBNull(4)
                     ? null
-                    : JsonSerializer.Deserialize<Histogram>(reader.GetString(4), JsonOptions),
+                    : JsonSerializer.Deserialize(reader.GetString(4), IndexJsonContext.Default.Histogram),
                 Adjacents = reader.IsDBNull(5)
                     ? null
-                    : JsonSerializer.Deserialize<Dictionary<string, Edge>>(reader.GetString(5), JsonOptions),
+                    : JsonSerializer.Deserialize(reader.GetString(5), IndexJsonContext.Default.DictionaryStringEdge),
                 PathCount = reader.GetInt32(6),
                 SubtreeVisits = reader.GetInt64(7),
                 SubtreeFinds = reader.GetInt64(8),
                 Extensions = reader.IsDBNull(9)
                     ? null
                     : new HashSet<string>(
-                        JsonSerializer.Deserialize<List<string>>(reader.GetString(9), JsonOptions),
+                        JsonSerializer.Deserialize(reader.GetString(9), IndexJsonContext.Default.ListString),
                         StringComparer.OrdinalIgnoreCase),
                 ExtensionsTruncated = reader.GetInt32(10) != 0,
                 SubtreeFindsByType = reader.IsDBNull(11)
                     ? null
-                    : JsonSerializer.Deserialize<Dictionary<string, long>>(reader.GetString(11), JsonOptions),
+                    : JsonSerializer.Deserialize(reader.GetString(11), IndexJsonContext.Default.DictionaryStringInt64),
                 NameFilter = reader.IsDBNull(12) ? null : (byte[])reader["name_filter"],
                 FilterFileCount = reader.GetInt64(13),
                 MtimeFiles = reader.GetInt64(14),
@@ -247,13 +245,13 @@ namespace CeeFind.BetterQueue
                 Filename = reader.GetString(0),
                 VertexNames = reader.IsDBNull(1)
                     ? new List<string>()
-                    : JsonSerializer.Deserialize<List<string>>(reader.GetString(1), JsonOptions),
+                    : JsonSerializer.Deserialize(reader.GetString(1), IndexJsonContext.Default.ListString),
                 Regexes = reader.IsDBNull(2)
                     ? new Dictionary<string, DateTime>()
-                    : JsonSerializer.Deserialize<Dictionary<string, DateTime>>(reader.GetString(2), JsonOptions),
+                    : JsonSerializer.Deserialize(reader.GetString(2), IndexJsonContext.Default.DictionaryStringDateTime),
                 FoundStrings = reader.IsDBNull(3)
                     ? new Dictionary<string, DateTime>()
-                    : JsonSerializer.Deserialize<Dictionary<string, DateTime>>(reader.GetString(3), JsonOptions),
+                    : JsonSerializer.Deserialize(reader.GetString(3), IndexJsonContext.Default.DictionaryStringDateTime),
             };
 
             thingCache[thing.Filename] = thing;
@@ -472,17 +470,17 @@ namespace CeeFind.BetterQueue
                     Filename = filename,
                     VertexNames = reader.IsDBNull(1)
                         ? new List<string>()
-                        : JsonSerializer.Deserialize<List<string>>(reader.GetString(1), JsonOptions),
+                        : JsonSerializer.Deserialize(reader.GetString(1), IndexJsonContext.Default.ListString),
                 };
 
                 if (needInsideDetail)
                 {
                     thing.Regexes = reader.IsDBNull(2)
                         ? new Dictionary<string, DateTime>()
-                        : JsonSerializer.Deserialize<Dictionary<string, DateTime>>(reader.GetString(2), JsonOptions);
+                        : JsonSerializer.Deserialize(reader.GetString(2), IndexJsonContext.Default.DictionaryStringDateTime);
                     thing.FoundStrings = reader.IsDBNull(3)
                         ? new Dictionary<string, DateTime>()
-                        : JsonSerializer.Deserialize<Dictionary<string, DateTime>>(reader.GetString(3), JsonOptions);
+                        : JsonSerializer.Deserialize(reader.GetString(3), IndexJsonContext.Default.DictionaryStringDateTime);
 
                     // Only a fully-populated thing is safe to reuse from cache.
                     thingCache[filename] = thing;
@@ -573,7 +571,7 @@ namespace CeeFind.BetterQueue
                 {
                     try
                     {
-                        Metrics metrics = JsonSerializer.Deserialize<Metrics>(reader.GetString(0), JsonOptions);
+                        Metrics metrics = JsonSerializer.Deserialize(reader.GetString(0), IndexJsonContext.Default.Metrics);
                         if (metrics != null)
                         {
                             history.Add(metrics);
@@ -704,12 +702,12 @@ ON CONFLICT(name) DO UPDATE SET
                 "$histogram",
                 vertex.LastFindCount == null
                     ? (object)DBNull.Value
-                    : JsonSerializer.Serialize(vertex.LastFindCount, JsonOptions));
+                    : JsonSerializer.Serialize(vertex.LastFindCount, IndexJsonContext.Default.Histogram));
             command.Parameters.AddWithValue(
                 "$adjacents",
                 vertex.Adjacents == null
                     ? (object)DBNull.Value
-                    : JsonSerializer.Serialize(vertex.Adjacents, JsonOptions));
+                    : JsonSerializer.Serialize(vertex.Adjacents, IndexJsonContext.Default.DictionaryStringEdge));
             command.Parameters.AddWithValue("$pathCount", vertex.PathCount);
             command.Parameters.AddWithValue("$subtreeVisits", vertex.SubtreeVisits);
             command.Parameters.AddWithValue("$subtreeFinds", vertex.SubtreeFinds);
@@ -718,13 +716,14 @@ ON CONFLICT(name) DO UPDATE SET
                 vertex.Extensions == null || vertex.Extensions.Count == 0
                     ? (object)DBNull.Value
                     : JsonSerializer.Serialize(
-                        vertex.Extensions.OrderBy(e => e, StringComparer.Ordinal).ToList(), JsonOptions));
+                        vertex.Extensions.OrderBy(e => e, StringComparer.Ordinal).ToList(),
+                        IndexJsonContext.Default.ListString));
             command.Parameters.AddWithValue("$truncated", vertex.ExtensionsTruncated ? 1 : 0);
             command.Parameters.AddWithValue(
                 "$findsByType",
                 vertex.SubtreeFindsByType == null || vertex.SubtreeFindsByType.Count == 0
                     ? (object)DBNull.Value
-                    : JsonSerializer.Serialize(vertex.SubtreeFindsByType, JsonOptions));
+                    : JsonSerializer.Serialize(vertex.SubtreeFindsByType, IndexJsonContext.Default.DictionaryStringInt64));
             command.Parameters.AddWithValue(
                 "$nameFilter",
                 vertex.IsFilterDirty && vertex.NameFilter != null
@@ -801,9 +800,9 @@ ON CONFLICT(filename) DO UPDATE SET
             command.Parameters.AddWithValue("$extension", (object)GetExtension(thing.Filename) ?? DBNull.Value);
             command.Parameters.AddWithValue("$lastSeen", ToUnix(DateTime.UtcNow));
             command.Parameters.AddWithValue("$hasContent", hasContent ? 1 : 0);
-            command.Parameters.AddWithValue("$vertexes", JsonSerializer.Serialize(thing.VertexNames, JsonOptions));
-            command.Parameters.AddWithValue("$regexes", JsonSerializer.Serialize(thing.Regexes, JsonOptions));
-            command.Parameters.AddWithValue("$foundStrings", JsonSerializer.Serialize(thing.FoundStrings, JsonOptions));
+            command.Parameters.AddWithValue("$vertexes", JsonSerializer.Serialize(thing.VertexNames, IndexJsonContext.Default.ListString));
+            command.Parameters.AddWithValue("$regexes", JsonSerializer.Serialize(thing.Regexes, IndexJsonContext.Default.DictionaryStringDateTime));
+            command.Parameters.AddWithValue("$foundStrings", JsonSerializer.Serialize(thing.FoundStrings, IndexJsonContext.Default.DictionaryStringDateTime));
 
             command.ExecuteNonQuery();
         }
@@ -871,7 +870,7 @@ ON CONFLICT(filename) DO UPDATE SET
                 "VALUES ($root, $date, $json);";
             command.Parameters.AddWithValue("$root", root);
             command.Parameters.AddWithValue("$date", ToUnix(metrics.SearchDate));
-            command.Parameters.AddWithValue("$json", JsonSerializer.Serialize(metrics, JsonOptions));
+            command.Parameters.AddWithValue("$json", JsonSerializer.Serialize(metrics, IndexJsonContext.Default.Metrics));
             command.ExecuteNonQuery();
         }
 

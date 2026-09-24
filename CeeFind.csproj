@@ -19,6 +19,15 @@
          invocation. Precompiling removes most of it from the startup path. -->
     <PublishReadyToRun>true</PublishReadyToRun>
     <TieredPGO>true</TieredPGO>
+    <!-- Serialisation goes through a source-generated context, so the trimmer can see
+         every stored shape and it is safe to remove the rest of the framework. Without
+         that context trimming produced a binary that searched correctly until an index
+         existed, then failed with "Property Get method was not found". -->
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>full</TrimMode>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+    <EventSourceSupport>false</EventSourceSupport>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
   </PropertyGroup>
   <ItemGroup>
     <Content Include="binary_files.txt">
