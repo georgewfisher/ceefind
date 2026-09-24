@@ -19,6 +19,22 @@ namespace CeeFind.Storage
 
         internal static SqliteConnection Open(string databasePath)
         {
+            try
+            {
+                return OpenAt(databasePath);
+            }
+            catch (Exception)
+            {
+                // The index is a cache. If it cannot be opened - a read-only location, a
+                // full disk, a file held by something else - searching must still work,
+                // just without memory of previous searches. Falling back to a private
+                // in-memory database keeps every code path working while writing nothing.
+                return OpenAt(":memory:");
+            }
+        }
+
+        private static SqliteConnection OpenAt(string databasePath)
+        {
             SqliteConnectionStringBuilder builder = new SqliteConnectionStringBuilder
             {
                 DataSource = databasePath,
@@ -27,31 +43,34 @@ namespace CeeFind.Storage
             };
 
             SqliteConnection connection = new SqliteConnection(builder.ToString());
-            connection.Open();
 
-            // Must be set before anything writes a page - including journal_mode - because
-            // SQLite can only choose this when the database is first created. Lets pruning
-            // return space to the filesystem instead of only freeing pages for reuse.
-            Execute(connection, "PRAGMA auto_vacuum=INCREMENTAL;");
-
-            // WAL lets concurrent `f` invocations read while one writes, which the previous
-            // whole-file rewrite could not do safely. busy_timeout absorbs the remaining
-            // writer contention instead of surfacing it as an error to the user.
-            Execute(connection, "PRAGMA journal_mode=WAL;");
-            Execute(connection, "PRAGMA synchronous=NORMAL;");
-            Execute(connection, "PRAGMA busy_timeout=5000;");
-            Execute(connection, "PRAGMA temp_store=MEMORY;");
-
-            // The index is a cache: everything in it is rediscoverable by walking. On a
-            // schema change it is cheaper and safer to rebuild than to migrate.
-            if (ReadUserVersion(connection) != SchemaVersion)
+            try
             {
-                Reset(connection);
-                Create(connection);
-                Execute(connection, $"PRAGMA user_version={SchemaVersion};");
-            }
+                connection.Open();
 
-            return connection;
+                // Opening is lazy enough that an unwritable location is not discovered
+                // until the first real write. Forcing one here means the fallback happens
+                // during setup rather than part way through a search.
+                Execute(connection, "PRAGMA auto_vacuum=INCREMENTAL;");
+                Execute(connection, "PRAGMA journal_mode=WAL;");
+                Execute(connection, "PRAGMA synchronous=NORMAL;");
+                Execute(connection, "PRAGMA busy_timeout=5000;");
+                Execute(connection, "PRAGMA temp_store=MEMORY;");
+
+                if (ReadUserVersion(connection) != SchemaVersion)
+                {
+                    Reset(connection);
+                    Create(connection);
+                    Execute(connection, $"PRAGMA user_version={SchemaVersion};");
+                }
+
+                return connection;
+            }
+            catch (Exception)
+            {
+                connection.Dispose();
+                throw;
+            }
         }
 
         private static void Reset(SqliteConnection connection)
