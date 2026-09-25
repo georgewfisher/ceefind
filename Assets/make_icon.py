@@ -32,39 +32,47 @@ FONT_PATH = find_font()
 
 
 def draw(size: int) -> Image.Image:
-    s = size * SUPERSAMPLE
-    img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    return draw_tile(size, size)
+
+
+def draw_tile(width: int, height: int) -> Image.Image:
+    """Draws the mark centred on a tile, which need not be square.
+
+    The wide tile the Store asks for is 310x150, so the mark is sized against the
+    shorter edge and centred, rather than stretched to fill.
+    """
+    w, h = width * SUPERSAMPLE, height * SUPERSAMPLE
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
-    pad = s * 0.04
-    d.rounded_rectangle([pad, pad, s - pad, s - pad], radius=s * 0.18, fill=BG)
+    short = min(w, h)
+    pad = short * 0.04
+    d.rounded_rectangle([pad, pad, w - pad, h - pad], radius=short * 0.18, fill=BG)
 
-    # Sized so '>f' fills the tile without crowding its edges.
-    font = ImageFont.truetype(FONT_PATH, int(s * 0.62))
+    font = ImageFont.truetype(FONT_PATH, int(short * 0.62))
 
-    # Measured and centred as a unit, so the pair sits true in the tile whatever
-    # the font's own side bearings happen to be.
     text = ">f"
     left, top, right, bottom = d.textbbox((0, 0), text, font=font)
-    x = (s - (right - left)) / 2 - left
-    y = (s - (bottom - top)) / 2 - top
+    x = (w - (right - left)) / 2 - left
+    y = (h - (bottom - top)) / 2 - top
 
-    # Drawn in two passes so the prompt and the letter can differ in colour, with
-    # the 'f' placed by advance width to preserve the font's own spacing.
     d.text((x, y), ">", font=font, fill=ACCENT)
     d.text((x + d.textlength(">", font=font), y), "f", font=font, fill=INK)
 
-    return img.resize((size, size), Image.LANCZOS)
+    return img.resize((width, height), Image.LANCZOS)
 
 
 def main() -> None:
     out = sys.argv[1]
     os.makedirs(out, exist_ok=True)
 
-    sizes = [16, 20, 24, 32, 40, 44, 48, 64, 128, 150, 256, 512]
+    sizes = [16, 20, 24, 30, 32, 36, 40, 44, 48, 50, 60, 64, 71, 89, 96, 128, 150, 256, 310, 512]
     images = {n: draw(n) for n in sizes}
     for n, img in images.items():
         img.save(os.path.join(out, f"icon-{n}.png"))
+
+    # The Store's wide tile is the one asset that is not square.
+    draw_tile(310, 150).save(os.path.join(out, "wide-310x150.png"))
 
     ico_sizes = [16, 24, 32, 48, 64, 128, 256]
     images[256].save(
@@ -74,7 +82,7 @@ def main() -> None:
     )
 
     print(f"font: {os.path.basename(FONT_PATH)}")
-    print(f"wrote {len(sizes)} PNGs and ceefind.ico to {out}")
+    print(f"wrote {len(sizes)} PNGs, a wide tile and ceefind.ico to {out}")
 
 
 if __name__ == "__main__":

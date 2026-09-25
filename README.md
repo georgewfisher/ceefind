@@ -1,4 +1,4 @@
-﻿# CeeFind - smart, all in one find tool with simple index
+# CeeFind - smart, all in one find tool with simple index
 
 Principles:
 1. Look in familiar places. *If you lost something before, it's likely to be where you found it last time*
@@ -21,6 +21,11 @@ Smart:
 * Minimally indexes in a single file for quick scans
 
 ## Installation
+
+Install from the Microsoft Store, which registers `f`, `c` and `cx` for you — no
+setup needed.
+
+To build from source instead:
 
 1. Build Release using the .NET SDK (https://dotnet.microsoft.com/en-us/download):
 
@@ -219,3 +224,12 @@ script:
 ```
 f *.config connectionString && echo "found one"
 ```
+
+## Privacy
+
+CeeFind sends nothing anywhere. Everything it learns stays in a local index you
+can delete at any time. See [PRIVACY.md](PRIVACY.md).
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
