@@ -48,6 +48,13 @@ FLAGS
   -u  -up                  search parent directories if nothing is found
   -j  -json                write the index out as state.json
       -silent              suppress non-result output
+  -help --help -?          show this
+
+ACTING ON A RESULT
+  --cd                     print the directory of the first match, alone
+  --open                   open the first match with its associated program
+
+  Flags may be written with one dash or two.
 
 EXIT CODES
   0  something was found
@@ -55,9 +62,14 @@ EXIT CODES
   2  the command could not be understood
 
 SHELL INTEGRATION
-  c changes the directory of the shell you are in, which only the shell can do,
-  so it has to be a function rather than a program. Run 'ceefind init' to see how
-  to set that up for your shell.
+  c changes the directory of the shell you are in, which only the shell can do.
+  --cd prints the target and nothing else so a one-line function can wrap it:
+
+      function c { Set-Location (ceefind --cd $args) }      # PowerShell
+      c() { cd ""$(ceefind --cd ""$@"")""; }                    # bash or zsh
+
+  Run 'ceefind init' for the full setup, or install from the Store, where c and
+  cx are registered for you.
 
 CeeFind remembers where it found things and looks there first next time. The index
 lives in %LOCALAPPDATA%\CeeFind and can be deleted at any time.");

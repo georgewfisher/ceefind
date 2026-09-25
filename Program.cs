@@ -49,6 +49,12 @@ namespace CeeFind
         /// </summary>
         private const int MatchColumnWidth = 35;
 
+        /// <summary>
+        /// Set when --open finds its target, so the file is launched after the search has
+        /// finished and its index has been written rather than from inside the walk.
+        /// </summary>
+        private static string openTarget;
+
         private static int Main(string[] args)
         {
             try
@@ -101,6 +107,20 @@ namespace CeeFind
             List<Regex> search = new List<Regex>();
             SearchSettings settings = new SearchSettings();
 
+            // MSIX registers aliases, so the same binary may be launched as c or cx.
+            // Taking the action from the invocation name means those work without a shell
+            // profile; --cd and --open below can still override it.
+            settings.Action = ResultActions.FromInvocationName();
+            if (settings.Action == ResultAction.ChangeDirectory)
+            {
+                settings.First = true;
+                settings.OutputDirectoriesOnly = true;
+            }
+            else if (settings.Action == ResultAction.Open)
+            {
+                settings.First = true;
+            }
+
             string[] strArrays = args;
             bool containsDivider = args.Any(a => a == "--");
             bool filenamePart = true;
@@ -138,7 +158,9 @@ namespace CeeFind
                 }
                 else if (arg.StartsWith("-"))
                 {
-                    string argValue = arg.Substring(1).ToLower();
+                    // Both -flag and --flag are accepted; the latter is what people
+                    // reach for by habit, and rejecting it as unknown is unhelpful.
+                    string argValue = arg.TrimStart('-').ToLower();
                     switch (argValue)
                     {
                         case "silent":
@@ -175,6 +197,18 @@ namespace CeeFind
                             break;
                         case "first":
                         case "f":
+                            settings.First = true;
+                            break;
+                        case "cd":
+                            // Print the containing directory of the first match and
+                            // nothing else, so a shell function can cd to it. Implies
+                            // -first -dirs, since a wrapper can only use one path.
+                            settings.Action = ResultAction.ChangeDirectory;
+                            settings.First = true;
+                            settings.OutputDirectoriesOnly = true;
+                            break;
+                        case "open":
+                            settings.Action = ResultAction.Open;
                             settings.First = true;
                             break;
                         case "sensitive":
@@ -367,7 +401,26 @@ namespace CeeFind
                 ? metrics.FileMatchInsideCount > 0
                 : metrics.FileMatchCount > 0;
 
-            return found ? ExitFound : ExitNothingFound;
+            if (!found)
+            {
+                // Say so, unless the output is being consumed by a shell wrapper that
+                // expects a path and nothing else.
+                if (settings.Action != ResultAction.ChangeDirectory)
+                {
+                    Console.Error.WriteLine($"ceefind: no match for {string.Join(' ', args)}");
+                }
+
+                return ExitNothingFound;
+            }
+
+            // Launching is left until the search has finished and the index has been
+            // written, so the record of the find survives whatever the opened program does.
+            if (settings.Action == ResultAction.Open && openTarget != null)
+            {
+                return ResultActions.Open(openTarget);
+            }
+
+            return ExitFound;
         }
 
         /// <summary>
@@ -798,7 +851,11 @@ namespace CeeFind
                                     directory.Vertex);
                             }
 
-                            if (!metrics.Settings.OutputDirectoriesOnly)
+                            if (metrics.Settings.Action == ResultAction.Open)
+                            {
+                                openTarget = file.FullName;
+                            }
+                            else if (!metrics.Settings.OutputDirectoriesOnly)
                             {
                                 Console.WriteLine(file.FullName);
                             }
@@ -1194,7 +1251,15 @@ namespace CeeFind
             {
                 currentPath.Vertex.RecordFind(DateTime.UtcNow);
 
-                if (metrics.Settings.SearchFilesOnly)
+                if (metrics.Settings.Action == ResultAction.Open)
+                {
+                    openTarget = file.FullName;
+                    if (metrics.Settings.First)
+                    {
+                        return true;
+                    }
+                }
+                else if (metrics.Settings.SearchFilesOnly)
                 {
                     Console.WriteLine(file.FullName);
                     if (metrics.Settings.First)

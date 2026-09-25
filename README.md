@@ -40,9 +40,22 @@ Smart:
 
 `c` changes the directory of the shell you are in. No program can do that — a
 process can only change its own directory — so `c` has to be a function inside
-the shell itself rather than an executable.
+the shell itself.
 
-Run `ceefind init` for the instructions, or add the line for your shell directly:
+`--cd` exists to make that function trivial: it prints the directory of the first
+match and nothing else, so a one-liner is enough.
+
+```powershell
+function c { Set-Location (ceefind --cd $args) }   # PowerShell
+```
+```bash
+c() { cd "$(ceefind --cd "$@")"; }                 # bash or zsh
+```
+
+`--open` needs no wrapper at all, since launching a file is something a program
+can do itself.
+
+Run `ceefind init` for the full setup, or add the line for your shell directly:
 
 **PowerShell** — add to `$PROFILE`:
 
@@ -64,10 +77,8 @@ reg add "HKCU\Software\Microsoft\Command Processor" /v AutoRun ^
     /t REG_EXPAND_SZ /d "%USERPROFILE%\ceefind.cmd" /f
 ```
 
-This works however CeeFind was installed, because the generated function calls
-`ceefind` by name. The `c.cmd`, `c.ps1`, `f.cmd` and `cx.cmd` files in the build
-output do the same job for a plain folder install, but cannot be used by a
-packaged install, which can only register executables.
+Installed from the Store, `c` and `cx` are registered as aliases and work with no
+setup: the executable reads the name it was invoked under and acts accordingly.
 
 ## Stored data
 

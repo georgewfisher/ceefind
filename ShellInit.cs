@@ -82,7 +82,7 @@ BASH OR ZSH
         private const string PowerShell = @"function f { ceefind @args }
 
 function c {
-    $target = ceefind -first -dirs @args
+    $target = ceefind --cd @args
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($target)) {
         Write-Host ""Could not find $args"" -ForegroundColor Yellow
         return
@@ -90,37 +90,25 @@ function c {
     Set-Location -LiteralPath $target
 }
 
-function cx {
-    $target = ceefind -first @args
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($target)) {
-        Write-Host ""Could not find $args"" -ForegroundColor Yellow
-        return
-    }
-    & $target
-}";
+function cx { ceefind --open @args }";
 
         private const string Cmd = @"@echo off
 rem Doskey macros expand at the interactive prompt, where a for variable takes a
 rem single percent sign. This file is read as a batch script first, which consumes
 rem one of each pair, so they are written doubled here to arrive singled.
 doskey f=ceefind $*
-doskey c=for /f ""delims="" %%i in ('ceefind -first -dirs $*') do @cd /d ""%%i""
-doskey cx=for /f ""delims="" %%i in ('ceefind -first $*') do @""%%i""";
+doskey c=for /f ""delims="" %%i in ('ceefind --cd $*') do @cd /d ""%%i""
+doskey cx=ceefind --open $*";
 
         private const string Posix = @"f() { ceefind ""$@""; }
 
 c() {
     local target
-    target=$(ceefind -first -dirs ""$@"") || { echo ""Could not find $*"" >&2; return 1; }
+    target=$(ceefind --cd ""$@"") || { echo ""Could not find $*"" >&2; return 1; }
     [ -n ""$target"" ] || { echo ""Could not find $*"" >&2; return 1; }
     cd ""$target""
 }
 
-cx() {
-    local target
-    target=$(ceefind -first ""$@"") || { echo ""Could not find $*"" >&2; return 1; }
-    [ -n ""$target"" ] || { echo ""Could not find $*"" >&2; return 1; }
-    ""$target""
-}";
+cx() { ceefind --open ""$@""; }";
     }
 }

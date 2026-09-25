@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 
 namespace CeeFind
 {
-    public class SearchSettings
+    internal class SearchSettings
     {
         [JsonIgnore]
         public bool IsVerbose { get; set; }
@@ -21,6 +21,14 @@ namespace CeeFind
         public bool ScanAllFiles { get; set; }
         [JsonIgnore]
         public bool OutputDirectoriesOnly { get; set; }
+
+        /// <summary>
+        /// What to do with the first result: print it, print its directory alone for a
+        /// shell wrapper to cd into, or open it. Set by --cd and --open, or by invoking
+        /// the executable as c or cx.
+        /// </summary>
+        [JsonIgnore]
+        public ResultAction Action { get; set; }
         public bool Up { get; internal set; }
         public bool First { get; set; }
         public bool SearchFilesOnly { get; set; }
