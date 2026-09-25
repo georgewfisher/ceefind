@@ -78,14 +78,24 @@ namespace CeeFind
 
         private static int Run(string[] args)
         {
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            directorySeparator = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                ? DIRECTORY_SEPARATOR_WINDOWS
+                : DIRECTORY_SEPARATOR_OTHER;
+
+            // Reading the command line comes first and touches nothing. Opening the index
+            // before this meant that asking for --help, asking for shell integration, or
+            // mistyping an option all created a database on disk.
+            ParsedCommand command = CommandLine.Parse(args, ExitFound, ExitUsageError);
+            if (command.ExitCode.HasValue)
             {
-                directorySeparator = DIRECTORY_SEPARATOR_WINDOWS;
+                return command.ExitCode.Value;
             }
-            else
-            {
-                directorySeparator = DIRECTORY_SEPARATOR_OTHER;
-            }
+
+            SearchSettings settings = command.Settings;
+            List<string> filenameFilterRegex = command.FilenameFilters;
+            List<string> negativeFilenameFilterRegex = command.NegativeFilenameFilters;
+            List<string> inFileSearchStrings = command.InFileFilters;
+            List<string> warnings = command.Warnings;
 
             string stateFile = Path.Combine(GetStateDirectory(), INDEX_FILE_NAME);
             Stuff stuff = new Stuff(stateFile);
@@ -95,213 +105,18 @@ namespace CeeFind
                             .AddConsole()
                             .SetMinimumLevel(LogLevel.Information));
             log = loggerFactory.CreateLogger<Program>();
-            string rootDirectoryString = Directory.GetCurrentDirectory();
+
             binaryFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (string extension in File.ReadAllLines(Path.Combine(AppContext.BaseDirectory, "binary_files.txt")))
             {
                 binaryFiles.Add(extension);
             }
-            List<string> filenameFilterRegex = new List<string>();
-            List<string> negativeFilenameFilterRegex = new List<string>();
-            List<string> inFileSearchStrings = new List<string>();
-            List<Regex> search = new List<Regex>();
-            SearchSettings settings = new SearchSettings();
 
-            // MSIX registers aliases, so the same binary may be launched as c or cx.
-            // Taking the action from the invocation name means those work without a shell
-            // profile; --cd and --open below can still override it.
-            settings.Action = ResultActions.FromInvocationName();
-            if (settings.Action == ResultAction.ChangeDirectory)
+            string rootDirectoryString = command.RootOverride ?? Directory.GetCurrentDirectory();
+            if (command.RootOverride != null && settings.IsVerbose)
             {
-                settings.First = true;
-                settings.OutputDirectoriesOnly = true;
+                log.LogInformation($"Search path updated to {command.RootOverride}");
             }
-            else if (settings.Action == ResultAction.Open)
-            {
-                settings.First = true;
-            }
-
-            string[] strArrays = args;
-            bool containsDivider = args.Any(a => a == "--");
-            bool filenamePart = true;
-            bool isNegated = false;
-            List<string> warnings = new List<string>();
-
-            // Nothing to search for, or an explicit request: show how to use the tool.
-            // Without this, `f` alone listed the whole directory and `f --help` searched
-            // for a file called --help.
-            if (args.Length == 0 || args.Any(IsHelpRequest))
-            {
-                Help.Show();
-                return args.Length == 0 ? ExitUsageError : ExitFound;
-            }
-
-            // Shell integration. Handled before anything else because it is a request to
-            // print text, not to search - and it must work before any index exists.
-            if (string.Equals(args[0], "init", StringComparison.OrdinalIgnoreCase))
-            {
-                if (args.Length < 2)
-                {
-                    ShellInit.ShowInstructions();
-                    return ExitFound;
-                }
-
-                return ShellInit.Emit(args[1]);
-            }
-
-            for (int i = 0; i < (int)strArrays.Length; i++)
-            {
-                string arg = strArrays[i];
-                if (arg == "--")
-                {
-                    filenamePart = false;
-                }
-                else if (arg.StartsWith("-"))
-                {
-                    // The usual convention: -v for a single letter, --verbose for a name.
-                    // Both spellings of a long name are accepted because CeeFind has
-                    // always taken -verbose and people's habits should not break, but
-                    // anything malformed - -vv, ---v, --x - is now rejected rather than
-                    // silently trimmed down to something that happened to match.
-                    if (!TryReadOption(arg, out string argValue))
-                    {
-                        Console.Error.WriteLine($"ceefind: unknown option '{arg}'");
-                        Console.Error.WriteLine("Run 'f --help' to see the available options.");
-                        return ExitUsageError;
-                    }
-
-                    switch (argValue)
-                    {
-                        case "silent":
-                        case "q":
-                            settings.IsSilent = true;
-                            break;
-                        case "binary":
-                        case "b":
-                            settings.IncludeBinary = true;
-                            break;
-                        case "verbose":
-                        case "v":
-                            settings.IsVerbose = true;
-                            break;
-                        case "history":
-                        case "h":
-                            settings.ShowHistory = true;
-                            break;
-                        case "previous":
-                        case "p":
-                            settings.ShowPreviousResults = true;
-                            break;
-                        case "dirs":
-                        case "dir":
-                        case "d":
-                            settings.OutputDirectoriesOnly = true;
-                            break;
-                        case "files":
-                        case "file":
-                        case "l":
-                            settings.SearchFilesOnly = true;
-                            break;
-                        case "up":
-                        case "u":
-                            settings.Up = true;
-                            break;
-                        case "first":
-                        case "f":
-                            settings.First = true;
-                            break;
-                        case "cd":
-                            // Print the containing directory of the first match and
-                            // nothing else, so a shell function can cd to it. Implies
-                            // -first -dirs, since a wrapper can only use one path.
-                            settings.Action = ResultAction.ChangeDirectory;
-                            settings.First = true;
-                            settings.OutputDirectoriesOnly = true;
-                            break;
-                        case "open":
-                            settings.Action = ResultAction.Open;
-                            settings.First = true;
-                            break;
-                        case "sensitive":
-                        case "s":
-                            settings.CaseSensitive = true;
-                            break;
-                        case "json":
-                        case "j":
-                            settings.WriteStateAsJson = true;
-                            break;
-                        case "regex":
-                        case "r":
-                            settings.NoRegexAssist = true;
-                            break;
-                        case "ignorenewlines":
-                        case "newlines":
-                        case "n":
-                            settings.IgnoreNewLines = true;
-                            break;
-                        default:
-                            // Silently treating an unrecognised flag as a filter meant a
-                            // typo quietly changed what was searched for.
-                            Console.Error.WriteLine($"ceefind: unknown option '{arg}'");
-                            Console.Error.WriteLine("Run 'f -help' to see the available options.");
-                            return ExitUsageError;
-                    }
-                }
-                else if (filenamePart && arg == "not")
-                {
-                    isNegated = true;
-                }
-                else if (filenamePart)
-                {
-                    string filter;
-                    if (DiscoverRootPath(arg, out string replacementRoot, out string filterWithoutRoot))
-                    {
-                        filter = filterWithoutRoot;
-                        rootDirectoryString = replacementRoot;
-                        log.LogInformation($"Search path updated to {replacementRoot}");
-                    }
-                    else
-                    {
-                        filter = arg;
-                    }
-
-                    if (isNegated)
-                    {
-                        negativeFilenameFilterRegex.Add(CleanFilenameFilter(filter, warnings, settings));
-                    }
-                    else if (arg != "*")
-                    {
-                        filenameFilterRegex.Add(CleanFilenameFilter(filter, warnings, settings));
-                    }
-
-                    if (!containsDivider)
-                    {
-                        filenamePart = false;
-                    }
-                }
-                else if (!filenamePart)
-                {
-                    if (Regex.IsMatch(arg, $"(?<!\\.)\\*\\."))
-                    {
-                        warnings.Add(@$"Using ""*."" in file search string ""{arg}"" with regular expression ""\\..*"" to make searches easier to write.");
-                        arg = Regex.Replace(arg, "(?<!\\.)\\*\\.", "\\..*");
-                    }
-
-                    inFileSearchStrings.Add(arg);
-                    settings.SearchInFiles = true;
-                }
-            }
-
-            /*if (settings.ShowPreviousResults)
-            {
-                (string, Metrics) mostRecent = stuff.SearchHistory.SelectMany(sh => sh.Value.Select(v => (sh.Key, v))).OrderByDescending(v => v.Item2.SearchDate).FirstOrDefault();
-                if (mostRecent != null)
-                {
-                    rootDirectoryString = mostRecent.Item1;
-                    settings = mostRecent.Item2.Settings;
-                }
-            }*/
-
             DirectoryInfo rootDirectory = new DirectoryInfo(rootDirectoryString);
             if (filenameFilterRegex.All(f => f == "^.*$") && !negativeFilenameFilterRegex.Any())
             {
@@ -452,60 +267,6 @@ namespace CeeFind
         }
 
         /// <summary>
-        /// Reads an option, enforcing the usual shape: a single dash introduces one
-        /// letter, two dashes introduce a name.
-        ///
-        /// A long name after one dash is also allowed, because CeeFind has always
-        /// accepted -verbose and breaking that would be gratuitous. What is no longer
-        /// allowed is anything malformed: three dashes, or a run of letters after a single
-        /// dash. Those were previously trimmed until they matched something, so '---v'
-        /// quietly behaved as '-v'.
-        /// </summary>
-        private static bool TryReadOption(string arg, out string name)
-        {
-            name = null;
-
-            if (arg.StartsWith("--"))
-            {
-                // Exactly two dashes, then a name of more than one character.
-                if (arg.Length < 4 || arg[2] == '-')
-                {
-                    return false;
-                }
-
-                name = arg.Substring(2).ToLowerInvariant();
-                return true;
-            }
-
-            // A single dash: either one letter, or a long name for compatibility.
-            if (arg.Length < 2 || arg[1] == '-')
-            {
-                return false;
-            }
-
-            name = arg.Substring(1).ToLowerInvariant();
-            return true;
-        }
-
-        private static bool IsHelpRequest(string arg)
-        {
-            switch (arg.ToLowerInvariant())
-            {
-                case "-h":
-                    // Deliberately absent: -h has always meant history here.
-                    return false;
-                case "-help":
-                case "--help":
-                case "-?":
-                case "/?":
-                case "help":
-                    return true;
-                default:
-                    return false;
-            }
-        }
-
-        /// <summary>
         /// Returns the per-user directory used to persist the index. Writing next to the
         /// executable fails when CeeFind is installed to a read-only location such as
         /// Program Files or an MSIX package root.
@@ -553,38 +314,6 @@ namespace CeeFind
             }
         }
 
-        /// <summary>
-        /// Allows for a root path to be provided as part of a path filter, allowing for things like C:\myfiles\*.txt
-        /// </summary>
-        /// <param name="filter"></param>
-        /// <param name="rootDirectoryString"></param>
-        /// <param name="replacementFilter"></param>
-        /// <returns></returns>
-        private static bool DiscoverRootPath(string filter, out string rootDirectoryString, out string replacementFilter)
-        {
-            rootDirectoryString = string.Empty;
-            replacementFilter = string.Empty;
-            if (filter.Contains(directorySeparator)) {
-                // Attempt to extract directories from prefix.
-                // Slash could have other meanings so assume user knows what they are doing
-                StringBuilder rootPath = new StringBuilder();
-                for (int i = 0; i < filter.Length; i++)
-                {
-                    rootPath.Append(filter[i]);
-                    if (filter[i] == directorySeparator)
-                    {
-                        string currentRoot = rootPath.ToString();
-                        if (Directory.Exists(currentRoot))
-                        {
-                            rootDirectoryString = currentRoot;
-                        }
-                    }
-                }
-            }
-            replacementFilter = filter.Substring(rootDirectoryString.Length, filter.Length - rootDirectoryString.Length);
-            return rootDirectoryString.Length > 0;
-        }
-
         private static void ShowHistory(Stuff stuff, DirectoryInfo rootDirectory)
         {
             List<Metrics> history = stuff.GetHistory(rootDirectory.FullName);
@@ -600,33 +329,6 @@ namespace CeeFind
                     Console.WriteLine(search);
                 }
             }
-        }
-
-        private static string CleanFilenameFilter(string arg, List<string> warnings, SearchSettings settings)
-        {
-            string filter = arg;
-
-            if (!settings.NoRegexAssist)
-            {
-                if (!filter.StartsWith("^"))
-                {
-                    filter = string.Concat("^", filter);
-                }
-                if (!filter.EndsWith("$"))
-                {
-                    filter = string.Concat(filter, "$");
-                }
-
-                if (Regex.IsMatch(filter, "(?<!\\.)\\*"))
-                {
-                    filter = Regex.Replace(filter, "(?<!\\.)\\*", ".*");
-                    warnings.Add(@$"Updating ""*"" in filename search string ""{arg}"" with regular expression ""{filter}"" to make searches easier to write.");
-                }
-
-                filter = FilterAnalysis.EscapeLiteralDots(filter);
-            }
-
-            return filter;
         }
 
         private static void Finish(Stuff stuff, DirectoryInfo rootDirectory, bool isEarlyTerminated, bool isCompleteScan, bool isFinished, string stateFile, Metrics metrics)
