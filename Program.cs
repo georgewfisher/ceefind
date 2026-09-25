@@ -158,12 +158,22 @@ namespace CeeFind
                 }
                 else if (arg.StartsWith("-"))
                 {
-                    // Both -flag and --flag are accepted; the latter is what people
-                    // reach for by habit, and rejecting it as unknown is unhelpful.
-                    string argValue = arg.TrimStart('-').ToLower();
+                    // The usual convention: -v for a single letter, --verbose for a name.
+                    // Both spellings of a long name are accepted because CeeFind has
+                    // always taken -verbose and people's habits should not break, but
+                    // anything malformed - -vv, ---v, --x - is now rejected rather than
+                    // silently trimmed down to something that happened to match.
+                    if (!TryReadOption(arg, out string argValue))
+                    {
+                        Console.Error.WriteLine($"ceefind: unknown option '{arg}'");
+                        Console.Error.WriteLine("Run 'f --help' to see the available options.");
+                        return ExitUsageError;
+                    }
+
                     switch (argValue)
                     {
                         case "silent":
+                        case "q":
                             settings.IsSilent = true;
                             break;
                         case "binary":
@@ -189,6 +199,7 @@ namespace CeeFind
                             break;
                         case "files":
                         case "file":
+                        case "l":
                             settings.SearchFilesOnly = true;
                             break;
                         case "up":
@@ -224,6 +235,7 @@ namespace CeeFind
                             settings.NoRegexAssist = true;
                             break;
                         case "ignorenewlines":
+                        case "newlines":
                         case "n":
                             settings.IgnoreNewLines = true;
                             break;
@@ -437,6 +449,42 @@ namespace CeeFind
             return duration.TotalSeconds < 60
                 ? $"{duration.TotalSeconds:N1}s"
                 : $"{(int)duration.TotalMinutes}m {duration.Seconds}s";
+        }
+
+        /// <summary>
+        /// Reads an option, enforcing the usual shape: a single dash introduces one
+        /// letter, two dashes introduce a name.
+        ///
+        /// A long name after one dash is also allowed, because CeeFind has always
+        /// accepted -verbose and breaking that would be gratuitous. What is no longer
+        /// allowed is anything malformed: three dashes, or a run of letters after a single
+        /// dash. Those were previously trimmed until they matched something, so '---v'
+        /// quietly behaved as '-v'.
+        /// </summary>
+        private static bool TryReadOption(string arg, out string name)
+        {
+            name = null;
+
+            if (arg.StartsWith("--"))
+            {
+                // Exactly two dashes, then a name of more than one character.
+                if (arg.Length < 4 || arg[2] == '-')
+                {
+                    return false;
+                }
+
+                name = arg.Substring(2).ToLowerInvariant();
+                return true;
+            }
+
+            // A single dash: either one letter, or a long name for compatibility.
+            if (arg.Length < 2 || arg[1] == '-')
+            {
+                return false;
+            }
+
+            name = arg.Substring(1).ToLowerInvariant();
+            return true;
         }
 
         private static bool IsHelpRequest(string arg)

@@ -36,25 +36,23 @@ FINDING TEXT INSIDE FILES
   are always regular expressions.
 
 FLAGS
-  -v  -verbose             progress, estimates and a summary
-  -h  -history             previous searches from this directory
-  -f  -first               stop at the first result
-  -d  -dir  -dirs          print directories only
-      -file -files         print file names only
-  -b  -binary              include binary and files over 1MB
-  -s  -sensitive           case sensitive
-  -r  -regex               no regular expression assistance
-  -n  -ignorenewlines      match across line endings
-  -u  -up                  search parent directories if nothing is found
-  -j  -json                write the index out as state.json
-      -silent              suppress non-result output
-  -help --help -?          show this
+  -v, --verbose            progress, estimates and a summary
+  -h, --history            previous searches from this directory
+  -f, --first              stop at the first result
+  -d, --dirs               print directories only
+  -l, --files              print file names only
+  -b, --binary             include binary and files over 1MB
+  -s, --sensitive          case sensitive
+  -r, --regex              no regular expression assistance
+  -n, --newlines           match across line endings
+  -u, --up                 search parent directories if nothing is found
+  -q, --silent             suppress non-result output
+  -j, --json               write the index out as state.json
+      --help               show this
 
 ACTING ON A RESULT
-  --cd                     print the directory of the first match, alone
-  --open                   open the first match with its associated program
-
-  Flags may be written with one dash or two.
+      --cd                 print the directory of the first match, alone
+      --open               open the first match with its associated program
 
 EXIT CODES
   0  something was found

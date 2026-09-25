@@ -181,16 +181,29 @@ This includes:
 
 |Flag|Description|
 |-|-|
-|-b<br />-binary|Include binary files, include large files (files over 1mb)|
-|-v<br />-verbose|Show progress and other diagnostic information|
-|-h<br />-history|Show previous searches executed from the current directory|
-|-dir<br />-dir</br>-dirs|Show only directories containing results, no file names or file lines|
-|-f<br />-first|Output only the first result. The command `c` uses `-first -dir`|
-|-file<br />-files|Show only filenames, not directories or file lines|
-|-json|Dump the current index out as `state.json`|
-|-r<br />-regex|Use pure regular expressions, no conversion|
-|-n<br />-ignorenewlines|Read entire files, including newlines|
-|-help<br />--help<br />-?|Show usage|
+|`-b`, `--binary`|Include binary files, and files over 1MB|
+|`-v`, `--verbose`|Show progress and other diagnostic information|
+|`-h`, `--history`|Show previous searches executed from the current directory|
+|`-d`, `--dirs`|Show only directories containing results|
+|`-f`, `--first`|Output only the first result|
+|`-l`, `--files`|Show only filenames, not directories or file lines|
+|`-s`, `--sensitive`|Case sensitive|
+|`-r`, `--regex`|Use pure regular expressions, no conversion|
+|`-n`, `--newlines`|Read entire files, including newlines|
+|`-u`, `--up`|Search parent directories if nothing is found|
+|`-q`, `--silent`|Suppress non-result output|
+|`-j`, `--json`|Dump the current index out as `state.json`|
+|`--help`|Show usage|
+
+Single letters take one dash, names take two. A name after one dash — `-verbose` —
+is also accepted, since earlier versions only supported that form.
+
+### Acting on a result
+
+|Flag|Description|
+|-|-|
+|`--cd`|Print the directory of the first match, alone, for a shell function to `cd` into|
+|`--open`|Open the first match with its associated program|
 
 ### Exit codes
 
