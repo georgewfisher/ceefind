@@ -1,4 +1,6 @@
-﻿using System.IO;
+using CeeFind.Utils;
+
+using System.IO;
 
 namespace CeeFind.BetterQueue
 {
@@ -14,22 +16,13 @@ namespace CeeFind.BetterQueue
         }
 
         public QueuedDirectory(DirectoryInfo directory, int parent, Vertex vertex, double score) :
-            this(directory.FullName.GetHashCode(), directory, parent, vertex, score)
+            this(PathHash.Of(directory.FullName), directory, parent, vertex, score)
         {
         }
 
         public static QueuedDirectory InitializeRoot(DirectoryInfo rootDirectory, Stuff stuff)
         {
-            Vertex v;
-            if (stuff.Vertexes.ContainsKey(rootDirectory.Name))
-            {
-                v = stuff.Vertexes[rootDirectory.Name];
-            }
-            else
-            {
-                v = new Vertex(rootDirectory.Name);
-                stuff.Vertexes.Add(v.Name, v);
-            }
+            Vertex v = stuff.GetOrAddVertex(rootDirectory.Name);
             QueuedDirectory qd = new QueuedDirectory(rootDirectory, 0, v, 0);
             qd.IsRoot = true;
             return qd;
@@ -38,10 +31,22 @@ namespace CeeFind.BetterQueue
         public double Score { get; set; }
         public int Parent { get; }
         public int Id { get; }
+
+        /// <summary>
+        /// Distance from the search root. Generated and vendored trees run deep; work you
+        /// are actually looking for usually does not.
+        /// </summary>
+        public int Depth { get; set; }
         public DirectoryInfo Directory { get; set; }
         public Vertex Vertex { get; set; }
         public bool IsVisited { get; set; }
         public bool IsRoot { get; set; }
+
+        /// <summary>
+        /// Set once this directory has been pushed to the back of the queue by the trigram
+        /// check, so it is not deferred a second time.
+        /// </summary>
+        public bool IsDeferred { get; set; }
 
         public override string ToString()
         {

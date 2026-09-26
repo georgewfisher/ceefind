@@ -19,7 +19,7 @@ namespace CeeFind
         public Dictionary<string, long> ScanSizeByExtension { get; set; }
         public Dictionary<string, long> ExcludedBinaries { get; set; }
         public DateTime SearchDate { get; set; }
-        public SearchSettings Settings { get; }
+        public SearchSettings Settings { get; set; }
         public bool IsComplete { get; set; }
         public string Args { get; set; }
 

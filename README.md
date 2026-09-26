@@ -1,4 +1,4 @@
-﻿# CeeFind - smart, all in one find tool with simple index
+# CeeFind - smart, all in one find tool with simple index
 
 Principles:
 1. Look in familiar places. *If you lost something before, it's likely to be where you found it last time*
@@ -22,19 +22,107 @@ Smart:
 
 ## Installation
 
-1. Build .sln Release x64 using msbuild.
+Install from the Microsoft Store, which registers `f`, `c` and `cx` for you — no
+setup needed.
 
-	a. Install msbuild on Windows: `winget install --id Microsoft.VisualStudio.2022.BuildTools --silent --accept-package-agreements --accept-source-agreements`
+To build from source instead:
 
-	b. Install .NET SDK: https://dotnet.microsoft.com/en-us/download/visual-studio-sdks
+1. Build Release using the .NET SDK (https://dotnet.microsoft.com/en-us/download):
 
-        c. Install nuget.exe
+	`dotnet build CeeFind.sln -c Release -p:Platform=x64`
 
-	d. Run: `nuget restore`
+	Or produce a standalone executable with no .NET runtime dependency:
 
-	e. Build: `msbuild CeeFind.sln`
+	`dotnet publish CeeFind.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish`
 
-2. Add release bin directory to path environment variable
+	Replace `win-x64` with `win-arm64` for Arm64 devices.
+
+2. Add the output directory to your `PATH` environment variable.
+
+3. Set up the shell integration (see below).
+
+## Shell integration
+
+`c` changes the directory of the shell you are in. No program can do that — a
+process can only change its own directory — so `c` has to be a function inside
+the shell itself.
+
+`--cd` exists to make that function trivial: it prints the directory of the first
+match and nothing else, so a one-liner is enough.
+
+```powershell
+function c { Set-Location (ceefind --cd $args) }   # PowerShell
+```
+```bash
+c() { cd "$(ceefind --cd "$@")"; }                 # bash or zsh
+```
+
+`--open` needs no wrapper at all, since launching a file is something a program
+can do itself.
+
+Run `ceefind init` for the full setup, or add the line for your shell directly:
+
+**PowerShell** — add to `$PROFILE`:
+
+```powershell
+ceefind init powershell | Out-String | Invoke-Expression
+```
+
+**Bash or Zsh** — add to `~/.bashrc` or `~/.zshrc`:
+
+```bash
+eval "$(ceefind init bash)"
+```
+
+**Cmd** — save the macros and load them from AutoRun:
+
+```bat
+ceefind init cmd > "%USERPROFILE%\ceefind.cmd"
+reg add "HKCU\Software\Microsoft\Command Processor" /v AutoRun ^
+    /t REG_EXPAND_SZ /d "%USERPROFILE%\ceefind.cmd" /f
+```
+
+Installed from the Store, `c` and `cx` are registered as aliases and work with no
+setup: the executable reads the name it was invoked under and acts accordingly.
+
+## Stored data
+
+CeeFind keeps its index and search history in a SQLite database in a per-user directory:
+
+* Windows: `%LOCALAPPDATA%\CeeFind\index.db`
+* Other platforms: `$XDG_DATA_HOME`/`~/.local/share` equivalent resolved by .NET
+
+Nothing is written next to the executable, so CeeFind works when installed to a
+read-only location such as `Program Files`.
+
+The index loads progressively: directory knowledge is read by name as the search
+meets it, and only what a search actually changed is written back, in a single
+transaction. Startup cost is therefore flat as the index grows, and concurrent
+`f` invocations in different terminals no longer overwrite each other.
+
+To reset the index, delete the database.
+
+### What CeeFind remembers, and what it forgets
+
+Index space is spent in proportion to how hard something is to rediscover:
+
+1. **Directory shape** — which directories, in which recurring layouts, tend to hold
+   what you want. This is the primary asset, and the last thing discarded.
+2. **Content evidence** — what was found *inside* files. The most expensive knowledge
+   to rebuild, because the alternative is re-reading every candidate file.
+3. **Specific filenames** — worth remembering, but cheap to find again by walking.
+4. **Traversal residue** — directory names that never produced a result. Rebuilt for
+   free by the next walk, so evicted first.
+
+Files matched purely by suffix (`*.cs`) are deliberately **not** indexed. One walk
+finds them with no file reads, so storing them would consume the budget that the
+first two tiers need.
+
+The index is capped at 256MB. Within every tier the measure is how often an entry has
+actually been useful — never how old it is. A location you found something in two
+years ago is precisely what you are least likely to remember unaided, so age ranks
+results but never decides what to discard. Entries are also retired when provably
+invalid, noticed for free during a search that was already resolving them.
 
 ## Usage
 
@@ -98,12 +186,50 @@ This includes:
 
 |Flag|Description|
 |-|-|
-|-b<br />-binary|Include binary files, include large files (files over 1mb)|
-|-v<br />-verbose|Show progress and other diagnostic information|
-|-h<br />-history|Show previous searches executed from the current directory|
-|-dir<br />-dir</br>-dirs|Show only directories containing results, no file names or file lines|
-|-f<br />-first|Output only the first result. The command `c` uses `-first -dir`|
-|-file<br />-files|Show only filenames, not directories or file lines|
-|-json|Dump the current index out as `state.json`|
-|-r<br />-regex|Use pure regular expressions, no conversion|
-|-n<br />-ignorenewlines|Read entire files, including newlines|
+|`-b`, `--binary`|Include binary files, and files over 1MB|
+|`-v`, `--verbose`|Show progress and other diagnostic information|
+|`-h`, `--history`|Show previous searches executed from the current directory|
+|`-d`, `--dirs`|Show only directories containing results|
+|`-f`, `--first`|Output only the first result|
+|`-l`, `--files`|Show only filenames, not directories or file lines|
+|`-s`, `--sensitive`|Case sensitive|
+|`-r`, `--regex`|Use pure regular expressions, no conversion|
+|`-n`, `--newlines`|Read entire files, including newlines|
+|`-u`, `--up`|Search parent directories if nothing is found|
+|`-q`, `--silent`|Suppress non-result output|
+|`-j`, `--json`|Dump the current index out as `state.json`|
+|`--help`|Show usage|
+
+Single letters take one dash, names take two. A name after one dash — `-verbose` —
+is also accepted, since earlier versions only supported that form.
+
+### Acting on a result
+
+|Flag|Description|
+|-|-|
+|`--cd`|Print the directory of the first match, alone, for a shell function to `cd` into|
+|`--open`|Open the first match with its associated program|
+
+### Exit codes
+
+|Code|Meaning|
+|-|-|
+|0|Something was found|
+|1|Nothing matched|
+|2|The command could not be understood|
+
+These follow the convention used by `grep` and `find`, so CeeFind can be used in a
+script:
+
+```
+f *.config connectionString && echo "found one"
+```
+
+## Privacy
+
+CeeFind sends nothing anywhere. Everything it learns stays in a local index you
+can delete at any time. See [PRIVACY.md](PRIVACY.md).
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
