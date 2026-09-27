@@ -25,17 +25,12 @@ Smart:
 Install from the Microsoft Store, which registers `f`, `c` and `cx` for you — no
 setup needed.
 
-To build from source instead:
+To build from source instead, using the .NET SDK (https://dotnet.microsoft.com/en-us/download):
 
-1. Build Release using the .NET SDK (https://dotnet.microsoft.com/en-us/download):
+1. `.\build.ps1` builds Release for x64.
 
-	`dotnet build CeeFind.sln -c Release -p:Platform=x64`
-
-	Or produce a standalone executable with no .NET runtime dependency:
-
-	`dotnet publish CeeFind.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish`
-
-	Replace `win-x64` with `win-arm64` for Arm64 devices.
+	`.\build.ps1 -Publish` produces a standalone executable with no .NET runtime
+	dependency, in `.\publish`. Add `-Runtime win-arm64` for Arm64 devices.
 
 2. Add the output directory to your `PATH` environment variable.
 

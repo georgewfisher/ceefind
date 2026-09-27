@@ -20,8 +20,8 @@ Reserving the name **CeeFind** in Partner Center is what issues them.
 
 ```powershell
 # One publish per architecture; both go in the same bundle.
-dotnet publish CeeFind.csproj -c Release -r win-x64   --self-contained true -p:PublishSingleFile=true -o publish\x64
-dotnet publish CeeFind.csproj -c Release -r win-arm64 --self-contained true -p:PublishSingleFile=true -o publish\arm64
+.\build.ps1 -Publish -Runtime win-x64   -OutputDir publish\x64
+.\build.ps1 -Publish -Runtime win-arm64 -OutputDir publish\arm64
 ```
 
 Then package each with `makeappx.exe` from the Windows SDK, pointing at
