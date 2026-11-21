@@ -60,9 +60,22 @@ CeeFind is a file search tool, the folders it searches belong to the user rather
 than to the package, and a packaged application cannot otherwise read them. Say
 so plainly in the submission notes and link to `PRIVACY.md`.
 
-**No visible window.** `AppListEntry="none"` hides CeeFind from the Start menu,
-which is right for a console tool but occasionally queried. It is a command line
-application, reached by typing its name.
+**No visible window.** The first submission hid CeeFind from the Start menu with
+`AppListEntry="none"`, and validation rejected both packages outright: a
+"headless app" needs the `HeadlessAppBypass` waiver, which has to be granted by
+Microsoft and this account does not have. The entry is now listed. Launched from
+Start it opens a console showing usage, which is how other command-line tools in
+the Store behave; it is still reached by typing its name.
+
+**Device families.** The package targets `Windows.Desktop` only. In the
+submission's package page, leave only Windows 10/11 desktop ticked: a ticked
+family with no package for it ("Xbox requires a neutral or x64 package") blocks
+the submission.
+
+**Restricted capabilities.** `runFullTrust` and `broadFileSystemAccess` are
+flagged on upload as needing approval; that is the justification box on the
+same page, not an error. `runFullTrust` is routine for a packaged Win32
+executable; for `broadFileSystemAccess` use the paragraph above.
 
 **Privacy policy URL is required** because of the capability above. `PRIVACY.md`
 is written; it needs a public URL, which the GitHub copy provides.

@@ -52,11 +52,13 @@
     <Application Id="CeeFind" Executable="ceefind.exe" EntryPoint="Windows.FullTrustApplication">
 
       <!--
-        A console tool has no window to show, so it is hidden from the Start menu
-        rather than listed there with a tile nobody can usefully click.
+        A console tool has no window to show, and the first submission hid it from
+        the Start menu with AppListEntry="none". The Store rejected that outright:
+        a "headless app" needs the HeadlessAppBypass waiver, which this account does
+        not have. So it is listed; launched from Start it opens a console showing
+        usage, which is what every other command-line tool in the Store does.
       -->
       <uap:VisualElements
-        AppListEntry="none"
         DisplayName="CeeFind"
         Description="Find files, and things inside them, by looking in likely places first."
         BackgroundColor="transparent"
