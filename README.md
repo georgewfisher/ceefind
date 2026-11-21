@@ -77,8 +77,12 @@ reg add "HKCU\Software\Microsoft\Command Processor" /v AutoRun ^
     /t REG_EXPAND_SZ /d "%USERPROFILE%\ceefind.cmd" /f
 ```
 
-Installed from the Store, `c` and `cx` are registered as aliases and work with no
+Installed from the Store, `f` and `cx` are registered as aliases and work with no
 setup: the executable reads the name it was invoked under and acts accordingly.
+`c` is registered too, but it is still just the executable — invoked that way it
+can only print the directory, the same as `--cd`, since no program can change its
+caller's directory. Getting `c` to actually move you there still needs the shell
+function above, from `ceefind init` or added by hand.
 
 ## Stored data
 

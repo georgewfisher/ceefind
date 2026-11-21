@@ -32,10 +32,13 @@ namespace CeeFind
         /// <summary>
         /// Reads the action from the name the executable was invoked under.
         ///
-        /// MSIX registers aliases, and an alias is just another name for the same binary,
-        /// so 'c' and 'cx' can be made to work without shipping separate programs or
-        /// asking the user to edit a profile. Running it as 'ceefind' or 'f' searches
-        /// normally.
+        /// MSIX registers 'cx' as an alias for this binary, so it can open a result
+        /// without shipping a separate program or asking the user to edit a profile.
+        /// 'c' is matched here too, for whoever renames or links the binary to it by
+        /// hand, but is not registered as a Store alias: run as a bare child process
+        /// it can only print the directory, the same as --cd, since nothing launched
+        /// this way can change its caller's directory. Running it as 'ceefind' or 'f'
+        /// searches normally.
         /// </summary>
         internal static ResultAction FromInvocationName()
         {

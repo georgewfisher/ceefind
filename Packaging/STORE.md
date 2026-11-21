@@ -2,19 +2,19 @@
 
 What is ready, what only you can do, and where review is likely to push back.
 
-## Before anything else
+## Identity
 
-Three values in `Package.appxmanifest` are marked `REPLACE` and the package will
-be rejected until they are filled in. All three come from Partner Center, under
-**Product Identity**:
+The three values Partner Center issues under **Product Identity** are filled in
+in `Package.appxmanifest`:
 
 | Manifest | Partner Center |
 |---|---|
-| `Identity/@Name` | Package/Identity/Name |
-| `Identity/@Publisher` | Package/Identity/Publisher, a full DN such as `CN=ABCD1234-…` |
-| `Properties/PublisherDisplayName` | the display name shown to customers |
+| `Identity/@Name` | `36541BlackWhiteL1.Ceefind` |
+| `Identity/@Publisher` | `CN=88B73C94-12D4-4F05-BEDE-2F7F384506F4` |
+| `Properties/PublisherDisplayName` | `Black & White L1` |
 
-Reserving the name **CeeFind** in Partner Center is what issues them.
+If the app is ever re-created under a new reservation, these come from the
+Product Identity page again and need updating to match.
 
 ## Building the package
 
@@ -40,13 +40,17 @@ packaging this rather than shipping a zip. After installing the package, in a
 ```
 f --help          shows usage
 f *.csproj        finds files
-c *.csproj        changes directory
 cx readme.md      opens the file
 ```
 
-`c` is the one to watch. It works because the executable reads the name it was
-invoked under, so if the alias is registered but `c` does nothing, the alias
-name and the expected name have diverged.
+`c` is not registered as an alias — only `f` and `cx` are, since both do their
+whole job as a bare child process. `c` cannot: changing the caller's directory
+is impossible for anything launched as a separate process, so there is nothing
+useful a bare `c` alias could do beyond printing a path, which looks like it
+did nothing. Testing `c` therefore means testing the shell function instead:
+run `ceefind init powershell | Out-String | Invoke-Expression` (or the
+`cmd`/`bash` equivalent) in that new terminal, then confirm `c *.csproj` moves
+you there.
 
 ## Where review is likely to push back
 
@@ -74,5 +78,6 @@ is written; it needs a public URL, which the GitHub copy provides.
 ## Still open
 
 - Screenshots have not been taken.
-- The submission has not been tested end to end, because that needs the Partner
-  Center identity values.
+- No package has been built yet — `publish\` is empty and no `.msix`/`.msixbundle`
+  exists.
+- The submission has not been tested end to end.
