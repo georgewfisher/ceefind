@@ -79,6 +79,10 @@
   </Applications>
 
   <Capabilities>
+    <!-- Required by EntryPoint="Windows.FullTrustApplication" - a classic Win32
+         executable rather than a sandboxed UWP app. -->
+    <rescap:Capability Name="runFullTrust" />
+
     <!--
       CeeFind searches wherever it is pointed, which is the whole of its purpose,
       so it needs access beyond its own package. This capability requires
