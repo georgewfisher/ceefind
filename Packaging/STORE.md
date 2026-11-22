@@ -91,6 +91,4 @@ is written; it needs a public URL, which the GitHub copy provides.
 ## Still open
 
 - Screenshots have not been taken.
-- No package has been built yet — `publish\` is empty and no `.msix`/`.msixbundle`
-  exists.
 - The submission has not been tested end to end.

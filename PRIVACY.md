@@ -1,12 +1,17 @@
 # Privacy policy
 
-**CeeFind** — last updated 25 September 2026
+**CeeFind** — last updated 21 November 2026
 
 ## The short version
 
 CeeFind sends nothing anywhere. It has no network code, no telemetry, no
 analytics and no crash reporting. Everything it records stays on your machine, in
-a file you can delete at any time.
+a file you can delete at any time. Nothing you search is ever seen by anyone but
+you - not the developer, not Microsoft, not a third party. CeeFind is open
+source, so none of this is a claim you have to take on faith: the code that
+reads and writes the index is at
+https://github.com/georgewfisher/ceefind, and it is exactly what builds the
+Store package.
 
 ## What CeeFind stores
 
@@ -31,6 +36,20 @@ Being explicit about the third item: when you search inside files, the text you
 searched for and the text that matched are written to the index, so that the same
 search is faster next time. If you search your own source code for a password,
 that string will be in the index.
+
+## Why the Store listing says CeeFind "uses personal information"
+
+The Store asks a yes-or-no question: does the product access, collect, or
+transmit personal information? That is broader than asking whether it is sent
+anywhere - it also covers data a product simply stores, even if only on the
+same machine. Because of the index above, the honest answer is yes, and that
+is what the listing says.
+
+What that answer does not mean: it does not mean CeeFind phones home, that a
+server somewhere has your search history, or that anyone other than you can
+read the index. It means exactly what this page describes - a local cache,
+readable only by you, deletable at any time - and nothing more. Answering
+truthfully here is what makes the rest of this page worth trusting.
 
 ## What CeeFind does not do
 
