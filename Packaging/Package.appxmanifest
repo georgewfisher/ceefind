@@ -3,19 +3,20 @@
 <!--
   MSIX manifest for CeeFind.
 
-  Three values must be replaced with the ones Partner Center issues for the app,
-  and the package will be rejected if they are left as they are. They are marked
-  REPLACE below, and all three are found under Product Identity in Partner Center:
-
-    Identity/@Name            the Package/Identity/Name value
-    Identity/@Publisher       the Package/Identity/Publisher value, a full
-                              distinguished name such as CN=ABCD1234-...
-    PublisherDisplayName      the display name shown to customers
+  Identity/@Name, Identity/@Publisher and PublisherDisplayName come from the
+  Product Identity page in Partner Center for this app; if the app is ever
+  re-created there under a new reservation, these three need updating to match.
 
   The aliases are the point of packaging this at all. An alias registers a name
-  that resolves to an executable, which is how f, c and cx reach the command line
-  without the user editing a shell profile. All three point at the same binary;
+  that resolves to an executable, which is how f and cx reach the command line
+  without the user editing a shell profile. Both point at the same binary;
   CeeFind reads the name it was invoked under and behaves accordingly.
+
+  c is deliberately not registered here. A child process can't change its
+  caller's directory, so run as a bare alias it could only print the path -
+  the same as --cd - which looks like it did nothing. c only works as the
+  shell function ceefind init emits, which calls `ceefind --cd` by name and
+  never needs this alias.
 -->
 
 <Package
@@ -27,13 +28,13 @@
   IgnorableNamespaces="uap uap3 desktop rescap">
 
   <Identity
-    Name="REPLACE.CeeFind"
-    Publisher="CN=REPLACE"
+    Name="36541BlackWhiteL1.Ceefind"
+    Publisher="CN=88B73C94-12D4-4F05-BEDE-2F7F384506F4"
     Version="1.0.0.0" />
 
   <Properties>
     <DisplayName>CeeFind</DisplayName>
-    <PublisherDisplayName>REPLACE</PublisherDisplayName>
+    <PublisherDisplayName>Black &amp; White L1</PublisherDisplayName>
     <Logo>Assets\icon-50.png</Logo>
     <Description>Find files, and things inside them, by looking in likely places first.</Description>
   </Properties>
@@ -51,11 +52,13 @@
     <Application Id="CeeFind" Executable="ceefind.exe" EntryPoint="Windows.FullTrustApplication">
 
       <!--
-        A console tool has no window to show, so it is hidden from the Start menu
-        rather than listed there with a tile nobody can usefully click.
+        A console tool has no window to show, and the first submission hid it from
+        the Start menu with AppListEntry="none". The Store rejected that outright:
+        a "headless app" needs the HeadlessAppBypass waiver, which this account does
+        not have. So it is listed; launched from Start it opens a console showing
+        usage, which is what every other command-line tool in the Store does.
       -->
       <uap:VisualElements
-        AppListEntry="none"
         DisplayName="CeeFind"
         Description="Find files, and things inside them, by looking in likely places first."
         BackgroundColor="transparent"
@@ -69,7 +72,6 @@
           <uap3:AppExecutionAlias>
             <desktop:ExecutionAlias Alias="ceefind.exe" />
             <desktop:ExecutionAlias Alias="f.exe" />
-            <desktop:ExecutionAlias Alias="c.exe" />
             <desktop:ExecutionAlias Alias="cx.exe" />
           </uap3:AppExecutionAlias>
         </uap3:Extension>
@@ -79,6 +81,10 @@
   </Applications>
 
   <Capabilities>
+    <!-- Required by EntryPoint="Windows.FullTrustApplication" - a classic Win32
+         executable rather than a sandboxed UWP app. -->
+    <rescap:Capability Name="runFullTrust" />
+
     <!--
       CeeFind searches wherever it is pointed, which is the whole of its purpose,
       so it needs access beyond its own package. This capability requires

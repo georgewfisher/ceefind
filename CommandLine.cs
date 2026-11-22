@@ -63,9 +63,8 @@ namespace CeeFind
 
             SearchSettings settings = new SearchSettings();
 
-            // MSIX registers aliases, so the same binary may be launched as c or cx.
-            // Taking the action from the invocation name means those work without a shell
-            // profile; --cd and --open can still override it.
+            // MSIX registers 'cx' as an alias, so the same binary may be launched under
+            // that name without a shell profile; --cd and --open can still override it.
             ApplyAction(settings, ResultActions.FromInvocationName());
 
             List<string> filters = new List<string>();

@@ -66,8 +66,9 @@ SHELL INTEGRATION
       function c { Set-Location (ceefind --cd $args) }      # PowerShell
       c() { cd ""$(ceefind --cd ""$@"")""; }                    # bash or zsh
 
-  Run 'ceefind init' for the full setup, or install from the Store, where c and
-  cx are registered for you.
+  Run 'ceefind init' for the full setup. Installed from the Store, f and cx work
+  immediately with no setup, but c still needs 'ceefind init' - it can only print
+  the path when run as a bare command, the same as --cd above.
 
 CeeFind remembers where it found things and looks there first next time. The index
 lives in %LOCALAPPDATA%\CeeFind and can be deleted at any time.");

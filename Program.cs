@@ -24,7 +24,15 @@ namespace CeeFind
         private static ILogger<Program> log;
         private const long LARGE_FILE_SIZE = 1024 * 1024;
         private const string INDEX_FILE_NAME = "index.db";
-        private static readonly object terminationLock = new object();
+
+        /// <summary>
+        /// Set by the Ctrl+C handler, which runs on its own thread pool thread while the
+        /// walk keeps running on the main thread. The walk polls this flag and stops itself
+        /// rather than the handler reaching into `stuff` directly - `Stuff` and its
+        /// `SqliteConnection` are not safe for concurrent use, so only ever one thread may
+        /// touch them.
+        /// </summary>
+        private static volatile bool cancelRequested;
 
         public Program()
         {
@@ -125,37 +133,21 @@ namespace CeeFind
 
             Metrics metrics = new Metrics(settings, string.Join(' ', args));
 
-            bool terminationInProgress = false;
-
             Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs e)
             {
-                // Prevent the process from terminating immediately
+                // Prevent the process from terminating immediately. The walk itself notices
+                // this flag and winds down; finishing and flushing happens back on the main
+                // thread, never here.
                 e.Cancel = true;
-                
-                if (!terminationInProgress)
+
+                if (!cancelRequested)
                 {
-                    terminationInProgress = true;
-                    
                     if (settings.IsVerbose)
                     {
                         Console.WriteLine("Gracefully terminating, please wait...");
                     }
-                    
-                    try
-                    {
-                        Finish(stuff, rootDirectory, true, false, false, stateFile, metrics);
-                    }
-                    catch (Exception ex)
-                    {
-                        if (settings.IsVerbose)
-                        {
-                            Console.ForegroundColor = ConsoleColor.Red;
-                            Console.WriteLine($"Error during termination: {ex.Message}");
-                            Console.ResetColor();
-                        }
-                    }
-                    
-                    Environment.Exit(0);
+
+                    cancelRequested = true;
                 }
             };
 
@@ -179,75 +171,105 @@ namespace CeeFind
                 }
             }
 
-            if (!settings.Up)
-            {
-                Search(stuff, rootDirectory, metrics);
-            }
-            else
-            {
-                List<SearchResult> results = new List<SearchResult>();
-                while (true)
-                {
-                    results = Search(stuff, rootDirectory, metrics);
-                    rootDirectory = rootDirectory.Parent;
+            // Indeterminate until something is found, then a bar that fills in with the
+            // match count - not a real completion percentage, since the walk has no total
+            // until it is done, but enough to tell "still looking" from "found some" from
+            // "found plenty" at a glance. Cleared on every exit path below.
+            TaskbarProgress.MarkBusy();
 
-                    if (rootDirectory == null || results.Count != 0)
-                    {
-                        break;
-                    }
-                    if (metrics.Settings.IsVerbose)
-                    {
-                        log.LogInformation($"Moving up to parent folder {rootDirectory}");
-                    }
-                    queue = new CeeFindQueue(directorySeparator, stuff, rootDirectory, filenameFilterRegex, negativeFilenameFilterRegex, inFileSearchStrings, settings);
-                    queue.Initialize();
-                }
-            }
-            if (settings.IsVerbose)
+            try
             {
-                // Thousands separators and a sensible number of decimal places: these are
-                // read by a person, and '0.0636436s' or '227243' take a moment to parse.
-                string scanned = $"Found {metrics.FileCount:N0} files over {metrics.DirectoryCount:N0} directories";
-                string timing = $"Scan time {FormatDuration(metrics.Duration)}. Efficiency {metrics.OverallEfficiency:N0}%.";
-
-                if (settings.SearchInFiles)
+                if (!settings.Up)
                 {
-                    TopExtensionsReport(metrics);
-                    Console.WriteLine($"{scanned}, of which {metrics.FileMatchCount:N0} were opened, which resulted in {metrics.FileMatchInsideCount:N0} file matches and {metrics.MatchRowCount:N0} lines matched. {timing}");
+                    Search(stuff, rootDirectory, metrics);
                 }
                 else
                 {
-                    Console.WriteLine($"{scanned}, of which {metrics.FileMatchCount:N0} were matches. {timing}");
+                    List<SearchResult> results = new List<SearchResult>();
+                    while (true)
+                    {
+                        results = Search(stuff, rootDirectory, metrics);
+
+                        if (cancelRequested)
+                        {
+                            break;
+                        }
+
+                        rootDirectory = rootDirectory.Parent;
+
+                        if (rootDirectory == null || results.Count != 0)
+                        {
+                            break;
+                        }
+                        if (metrics.Settings.IsVerbose)
+                        {
+                            log.LogInformation($"Moving up to parent folder {rootDirectory}");
+                        }
+                        queue = new CeeFindQueue(directorySeparator, stuff, rootDirectory, filenameFilterRegex, negativeFilenameFilterRegex, inFileSearchStrings, settings);
+                        queue.Initialize();
+                    }
                 }
-            }
 
-            Finish(stuff, rootDirectory, false, !queue.IsMore(), true, stateFile, metrics);
-
-            // What the caller actually wants to know: was anything found?
-            bool found = settings.SearchInFiles
-                ? metrics.FileMatchInsideCount > 0
-                : metrics.FileMatchCount > 0;
-
-            if (!found)
-            {
-                // Say so, unless the output is being consumed by a shell wrapper that
-                // expects a path and nothing else.
-                if (settings.Action != ResultAction.ChangeDirectory)
+                if (cancelRequested)
                 {
-                    Console.Error.WriteLine($"ceefind: no match for {string.Join(' ', args)}");
+                    // Same treatment as the old Ctrl+C handler: report neither stats nor a
+                    // found/not-found verdict for a search that did not run to completion. The
+                    // 5-second guard inside Finish still decides whether a near-instant cancel
+                    // is worth a flush at all.
+                    Finish(stuff, rootDirectory, true, false, false, stateFile, metrics);
+                    return ExitFound;
                 }
 
-                return ExitNothingFound;
-            }
+                if (settings.IsVerbose)
+                {
+                    // Thousands separators and a sensible number of decimal places: these are
+                    // read by a person, and '0.0636436s' or '227243' take a moment to parse.
+                    string scanned = $"Found {metrics.FileCount:N0} files over {metrics.DirectoryCount:N0} directories";
+                    string timing = $"Scan time {FormatDuration(metrics.Duration)}. Efficiency {metrics.OverallEfficiency:N0}%.";
 
-            // Launching is left until the search has finished and the index has been
-            // written, so the record of the find survives whatever the opened program does.
-            if (settings.Action == ResultAction.Open && openTarget != null)
+                    if (settings.SearchInFiles)
+                    {
+                        TopExtensionsReport(metrics);
+                        Console.WriteLine($"{scanned}, of which {metrics.FileMatchCount:N0} were opened, which resulted in {metrics.FileMatchInsideCount:N0} file matches and {metrics.MatchRowCount:N0} lines matched. {timing}");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"{scanned}, of which {metrics.FileMatchCount:N0} were matches. {timing}");
+                    }
+                }
+
+                Finish(stuff, rootDirectory, false, !queue.IsMore(), true, stateFile, metrics);
+
+                // What the caller actually wants to know: was anything found?
+                bool found = settings.SearchInFiles
+                    ? metrics.FileMatchInsideCount > 0
+                    : metrics.FileMatchCount > 0;
+
+                if (!found)
+                {
+                    // Say so, unless the output is being consumed by a shell wrapper that
+                    // expects a path and nothing else.
+                    if (settings.Action != ResultAction.ChangeDirectory)
+                    {
+                        Console.Error.WriteLine($"ceefind: no match for {string.Join(' ', args)}");
+                    }
+
+                    return ExitNothingFound;
+                }
+
+                // Launching is left until the search has finished and the index has been
+                // written, so the record of the find survives whatever the opened program does.
+                if (settings.Action == ResultAction.Open && openTarget != null)
+                {
+                    return ResultActions.Open(openTarget);
+                }
+
+                return ExitFound;
+            }
+            finally
             {
-                return ResultActions.Open(openTarget);
+                TaskbarProgress.Clear();
             }
-
-            return ExitFound;
         }
 
         /// <summary>
@@ -333,71 +355,68 @@ namespace CeeFind
 
         private static void Finish(Stuff stuff, DirectoryInfo rootDirectory, bool isEarlyTerminated, bool isCompleteScan, bool isFinished, string stateFile, Metrics metrics)
         {
-            lock (terminationLock)
-            {
-                metrics.IsComplete = isCompleteScan;
-                metrics.Clean();
+            metrics.IsComplete = isCompleteScan;
+            metrics.Clean();
 
-                if (metrics.Settings.WriteStateAsJson)
+            if (metrics.Settings.WriteStateAsJson)
+            {
+                try
                 {
+                    stuff.ExportJson("state.json");
+                }
+                catch (Exception ex)
+                {
+                    if (metrics.Settings.IsVerbose)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        Console.WriteLine($"Error writing state.json: {ex.Message}");
+                        Console.ResetColor();
+                    }
+                }
+            }
+
+            if (metrics.IsFileNameSearchWithHumanReadableResults || metrics.IsFileSearchWithHumanReadableResults)
+            {
+                // either complete, or early termination
+                if (isFinished || (isEarlyTerminated && DateTime.UtcNow.Subtract(metrics.SearchDate).TotalSeconds > 5))
+                {
+                    stuff.AddHistory(rootDirectory.FullName, metrics);
+
                     try
                     {
-                        stuff.ExportJson("state.json");
+                        // Only what this search actually touched is written, in one
+                        // transaction - not the whole graph as the old format required.
+                        stuff.Flush();
                     }
                     catch (Exception ex)
                     {
                         if (metrics.Settings.IsVerbose)
                         {
                             Console.ForegroundColor = ConsoleColor.Red;
-                            Console.WriteLine($"Error writing state.json: {ex.Message}");
+                            Console.WriteLine($"Error saving index: {ex.Message}");
+                            Console.ResetColor();
+                        }
+                    }
+
+                    try
+                    {
+                        // Guarded deliberately: enforcing retention budgets must never be
+                        // able to crash a search or block the index from being persisted.
+                        stuff.Prune();
+                    }
+                    catch (Exception ex)
+                    {
+                        if (metrics.Settings.IsVerbose)
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine($"Error pruning index: {ex.Message}");
                             Console.ResetColor();
                         }
                     }
                 }
-
-                if (metrics.IsFileNameSearchWithHumanReadableResults || metrics.IsFileSearchWithHumanReadableResults)
-                {
-                    // either complete, or early termination
-                    if (isFinished || (isEarlyTerminated && DateTime.UtcNow.Subtract(metrics.SearchDate).TotalSeconds > 5))
-                    {
-                        stuff.AddHistory(rootDirectory.FullName, metrics);
-
-                        try
-                        {
-                            // Only what this search actually touched is written, in one
-                            // transaction - not the whole graph as the old format required.
-                            stuff.Flush();
-                        }
-                        catch (Exception ex)
-                        {
-                            if (metrics.Settings.IsVerbose)
-                            {
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine($"Error saving index: {ex.Message}");
-                                Console.ResetColor();
-                            }
-                        }
-
-                        try
-                        {
-                            // Guarded deliberately: enforcing retention budgets must never be
-                            // able to crash a search or block the index from being persisted.
-                            stuff.Prune();
-                        }
-                        catch (Exception ex)
-                        {
-                            if (metrics.Settings.IsVerbose)
-                            {
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine($"Error pruning index: {ex.Message}");
-                                Console.ResetColor();
-                            }
-                        }
-                    }
-                }
-
-                stuff.Dispose();
             }
+
+            stuff.Dispose();
         }
 
         private static void TopExtensionsReport(Metrics metrics)
@@ -506,6 +525,11 @@ namespace CeeFind
             long backOffLoggingDuration = TimeSpan.FromSeconds(5).Ticks;
             while (true)
             {
+                if (cancelRequested)
+                {
+                    break;
+                }
+
                 if (!isTopExtensionsReportShown && sw.ElapsedTicks > TimeSpan.TicksPerSecond * 15)
                 {
                     TopExtensionsReport(metrics);
@@ -668,6 +692,9 @@ namespace CeeFind
                     // Remember directories where something was found (for index)
                     stuff.RecordFindLocation(directory.Vertex, directory.Directory.FullName, DateTime.UtcNow);
                     queue.RecordFindAncestry(directory, DateTime.UtcNow);
+
+                    TaskbarProgress.ReportFound(
+                        metrics.Settings.SearchInFiles ? metrics.FileMatchInsideCount : metrics.FileMatchCount);
                 }
 
                 queue.EnqueueSubfolder(directory.Directory, subdirectories);
