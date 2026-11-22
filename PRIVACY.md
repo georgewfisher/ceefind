@@ -45,10 +45,10 @@ anywhere - it also covers data a product simply stores, even if only on the
 same machine. Because of the index above, the honest answer is yes, and that
 is what the listing says.
 
-What that answer does not mean: it does not mean CeeFind phones home, that a
-server somewhere has your search history, or that anyone other than you can
-read the index. It means exactly what this page describes - a local cache,
-readable only by you, deletable at any time - and nothing more. Answering
+What that answer does not mean: it does not mean CeeFind phones home, or that a
+server somewhere has your search history. It means exactly what this page
+describes - a local cache, under your control, deletable at any time - and
+nothing more (see below for exactly how isolated "local" is). Answering
 truthfully here is what makes the rest of this page worth trusting.
 
 ## What CeeFind does not do
@@ -73,6 +73,22 @@ behind anywhere.
 
 You can also point the index somewhere else, or at a temporary location, with the
 `CEEFIND_INDEX` environment variable.
+
+## Is the index isolated from other applications?
+
+Installed from the Store, partly: Windows runs CeeFind with its own package
+identity, which redirects the folder above to a package-specific location
+(`%LOCALAPPDATA%\Packages\<package id>\LocalCache\Local\CeeFind\index.db`)
+rather than the plain shared one, and removes it entirely when the package is
+uninstalled. Built from source and run unpackaged, it is the plain shared
+folder above, the same as any other application's.
+
+Either way, this is not the same guarantee as encryption. CeeFind runs with
+your ordinary Windows account rather than inside a sandbox, so another program
+you run under that same account could still open the file if it went looking
+for it - the same as it could read any other file of yours. What packaging
+buys is a location nothing else collides with or stumbles into, and a clean
+uninstall. It does not buy a lock that only CeeFind holds the key to.
 
 ## Why CeeFind asks for broad file system access
 
